@@ -6,10 +6,10 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <string>
-#include <stdexcept>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -18,15 +18,15 @@ std::ostream& log = std::cout;
 std::ostream& error_log = std::cerr;
 
 #ifndef NDEBUG
-    constexpr bool is_debug = true;
+constexpr bool is_debug = true;
 #else
-    constexpr bool is_debug = false;
+constexpr bool is_debug = false;
 #endif
 
-#define STRING(v) # v
+#define STRING(v) #v
 
 const char* vulkanErrorString(VkResult res) {
-    switch(res) {
+    switch (res) {
         case VK_ERROR_EXTENSION_NOT_PRESENT:
             return "extension not present";
     }
@@ -42,19 +42,18 @@ void error(VkResult res, const std::string& s) {
     }
 }
 
-template<typename I, typename U>
+template <typename I, typename U>
 bool contains_if(I first, I last, U op) {
     return std::find_if(first, last, op) != last;
 }
-}
+}  // namespace util
 
 SDL_Window* createWindow(unsigned width, unsigned height) {
     return SDL_CreateWindow(
         "Vulkan tutorial",
         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
         width, height,
-        SDL_WINDOW_VULKAN
-    );
+        SDL_WINDOW_VULKAN);
 }
 
 bool shouldClose(SDL_Window* window) {
@@ -95,7 +94,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugInfoCallback(
     util::error_log << "VULKAN INFO: " << callback_data->pMessage << std::endl;
     return VK_FALSE;
 }
-}
+}  // namespace
 
 VkDebugUtilsMessengerCreateInfoEXT getDebugMessengerDefaultCreateInfo() {
     return {
@@ -116,15 +115,13 @@ VkDebugUtilsMessengerCreateInfoEXT getDebugMessengerDefaultCreateInfo() {
 }
 
 VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance) {
-    auto f = (PFN_vkCreateDebugUtilsMessengerEXT) (
-        vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT")
-    );
+    auto f = (PFN_vkCreateDebugUtilsMessengerEXT) (vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
     auto err_str = "Failed to create Vulkan debug messenger";
     if (!f) {
         util::error(VK_ERROR_EXTENSION_NOT_PRESENT, err_str);
     }
 
-    VkDebugUtilsMessengerCreateInfoEXT create_info = 
+    VkDebugUtilsMessengerCreateInfoEXT create_info =
         getDebugMessengerDefaultCreateInfo();
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
     f(instance, &create_info, nullptr, &messenger);
@@ -134,14 +131,13 @@ VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance) {
 
 void destroyDebugMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger) {
     auto f = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-        vkGetInstanceProcAddr(instance, STRING(vkDestroyDebugUtilsMessengerEXT))
-    );
+        vkGetInstanceProcAddr(instance, STRING(vkDestroyDebugUtilsMessengerEXT)));
     if (f) {
         f(instance, messenger, nullptr);
     }
 }
 
-template<typename I>
+template <typename I>
 bool checkAvailableLayers(I first, I last) {
     unsigned num_layers = 0;
     vkEnumerateInstanceLayerProperties(&num_layers, nullptr);
@@ -152,29 +148,25 @@ bool checkAvailableLayers(I first, I last) {
         [&](const auto& layer_name) {
             return util::contains_if(
                 layers.begin(), layers.end(),
-                [&] (const auto& layer) { return std::strcmp(layer.layerName, layer_name) == 0; }
-            );
-        }
-    );
+                [&](const auto& layer) { return std::strcmp(layer.layerName, layer_name) == 0; });
+        });
 }
 
 VkInstance createInstance(SDL_Window* window) {
     const std::array<const char*, 1> validation_layers = {"VK_LAYER_KHRONOS_validation"};
     auto validation_layer_count =
-    [&]() -> unsigned {
+        [&]() -> unsigned {
         if (util::is_debug) {
-            for (const auto& l : validation_layers) {
+            for (const auto& l: validation_layers) {
                 util::log << "Request layer " << l << "\n";
             }
-            if(!checkAvailableLayers(validation_layers.begin(), validation_layers.end())) {
+            if (!checkAvailableLayers(validation_layers.begin(), validation_layers.end())) {
                 util::error_log << "Not all requested layers are available!\n";
                 return 0;
-            }
-            else {
+            } else {
                 return validation_layers.size();
             }
-        }
-        else {
+        } else {
             return 0;
         }
     }();
@@ -190,9 +182,9 @@ VkInstance createInstance(SDL_Window* window) {
         util::log << "Require extension " << e << "\n";
     }
 
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = 
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info =
         getDebugMessengerDefaultCreateInfo();
-    VkInstanceCreateInfo create_info {
+    VkInstanceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pNext = util::is_debug ? &debug_messenger_create_info : nullptr,
         .flags = 0,
@@ -233,7 +225,7 @@ VkPhysicalDevice selectGPU(VkInstance instance) {
         util::log << gpuName(gpu) << "\n";
     }
 
-    auto it = std::max_element(gpus.begin(), gpus.end(), [&](const auto& lhs, const auto& rhs) {return gpuScore(lhs) > gpuScore(rhs);});
+    auto it = std::max_element(gpus.begin(), gpus.end(), [&](const auto& lhs, const auto& rhs) { return gpuScore(lhs) > gpuScore(rhs); });
     auto gpu = *it;
     util::log << "Select " << gpuName(gpu) << "\n";
 
@@ -285,7 +277,7 @@ VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilyIndices& queue_fami
     std::unordered_set<unsigned> queue_family_indices =
         {queue_families.graphics.value(), queue_families.present.value()};
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
-    for (const auto& i : queue_family_indices) {
+    for (const auto& i: queue_family_indices) {
         VkDeviceQueueCreateInfo queue_create_info = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             .pNext = nullptr,
@@ -314,8 +306,8 @@ VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilyIndices& queue_fami
 }
 
 struct Queues {
-    VkQueue graphics;  
-    VkQueue present;  
+    VkQueue graphics;
+    VkQueue present;
 };
 
 Queues getDeviceQueues(VkDevice device, const QueueFamilyIndices& queue_families) {
@@ -332,14 +324,14 @@ int main() {
     auto window = createWindow(1280, 720);
     auto instance = createInstance(window);
     auto surface = createSurface(window, instance);
-    auto debug_messenger = 
+    auto debug_messenger =
         util::is_debug ? createDebugMessenger(instance) : VK_NULL_HANDLE;
     auto gpu = selectGPU(instance);
     auto queue_families = getGPUQueueFamilies(gpu, surface);
     auto device = createDevice(gpu, queue_families);
     auto queues = getDeviceQueues(device, queue_families);
 
-    while(!shouldClose(window)) {
+    while (!shouldClose(window)) {
         SDL_UpdateWindowSurface(window);
     }
 
