@@ -29,11 +29,13 @@ const char* vulkanErrorString(VkResult res) {
     switch (res) {
         case VK_ERROR_EXTENSION_NOT_PRESENT:
             return "extension not present";
+        default: {
+            error_log << "FIXME: Unknown VkResult\n";
+            static std::string buffer;
+            buffer = std::to_string(res);
+            return buffer.c_str();
+        }
     }
-    error_log << "FIXME: Unknown VkResult\n";
-    static std::string buffer;
-    buffer = std::to_string(res);
-    return buffer.c_str();
 }
 
 void error(VkResult res, const std::string& s) {
@@ -191,7 +193,7 @@ VkInstance createInstance(SDL_Window* window) {
         .pApplicationInfo = nullptr,
         .enabledLayerCount = validation_layer_count,
         .ppEnabledLayerNames = validation_layers.data(),
-        .enabledExtensionCount = extensions.size(),
+        .enabledExtensionCount = static_cast<unsigned>(extensions.size()),
         .ppEnabledExtensionNames = extensions.data(),
     };
     VkInstance instance = VK_NULL_HANDLE;
@@ -292,7 +294,7 @@ VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilyIndices& queue_fami
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .queueCreateInfoCount = queue_create_infos.size(),
+        .queueCreateInfoCount = static_cast<unsigned>(queue_create_infos.size()),
         .pQueueCreateInfos = queue_create_infos.data(),
         .enabledLayerCount = 0,
         .ppEnabledLayerNames = nullptr,
