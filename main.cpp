@@ -773,6 +773,28 @@ VkPipeline createPipeline(
     return pipeline;
 };
 
+std::vector<VkFramebuffer> createSwapchainFramebuffers(
+    VkDevice device, VkRenderPass render_pass,
+    const std::vector<VkImageView> views, VkExtent2D swapchain_extent)
+{
+    std::vector<VkFramebuffer> framebuffers{views.size()};
+    for (unsigned i = 0; i < views.size(); i++) {
+        VkFramebufferCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .renderPass = render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &views[i],
+            .width = swapchain_extent.width,
+            .height = swapchain_extent.height,
+            .layers = 1,
+        };
+        vkCreateFramebuffer(device, &create_info, nullptr, &framebuffers[i]);
+    }
+    return framebuffers;
+}
+
 int main() {
     SDL_SetMainReady();
     SDL_Init(SDL_INIT_EVERYTHING);
@@ -796,11 +818,15 @@ int main() {
     auto pipeline_layout = createPipelineLayout(device);
     auto render_pass = createRenderPass(device, surface_format);
     auto pipeline = createPipeline(device, swapchain_extent, pipeline_layout, render_pass);
+    auto framebuffers = createSwapchainFramebuffers(device, render_pass, views, swapchain_extent);
 
     while (!shouldClose(window)) {
         SDL_UpdateWindowSurface(window);
     }
 
+    for (auto& framebuffer: framebuffers) {
+        vkDestroyFramebuffer(device, framebuffer, nullptr);
+    }
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyRenderPass(device, render_pass, nullptr);
     vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
