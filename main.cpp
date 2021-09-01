@@ -592,6 +592,16 @@ VkRenderPass createRenderPass(VkDevice device, VkFormat format) {
         .pPreserveAttachments = nullptr,
     };
 
+    VkSubpassDependency dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = 0,
+    };
+
     VkRenderPassCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .pNext = nullptr,
@@ -600,8 +610,8 @@ VkRenderPass createRenderPass(VkDevice device, VkFormat format) {
         .pAttachments = &attachment_description,
         .subpassCount = 1,
         .pSubpasses = &subpass,
-        .dependencyCount = 0,
-        .pDependencies = nullptr,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
     };
 
     VkRenderPass render_pass = VK_NULL_HANDLE;
@@ -795,6 +805,205 @@ std::vector<VkFramebuffer> createSwapchainFramebuffers(
     return framebuffers;
 }
 
+VkCommandPool createCommandPool(VkDevice device, unsigned graphics_queue) {
+    VkCommandPoolCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .queueFamilyIndex = graphics_queue,
+    };
+    VkCommandPool command_pool = VK_NULL_HANDLE;
+    vkCreateCommandPool(device, &create_info, nullptr, &command_pool);
+    return command_pool;
+}
+
+std::vector<VkCommandBuffer> allocateCommandBuffers(
+    VkDevice device, VkCommandPool command_pool, unsigned num_command_buffers)
+{
+    VkCommandBufferAllocateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .commandPool = command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = num_command_buffers,
+    };
+    std::vector<VkCommandBuffer> command_buffers{num_command_buffers};
+    vkAllocateCommandBuffers(device, &create_info, command_buffers.data());
+    return command_buffers;
+}
+
+void recordCommandBuffers(
+    const std::vector<VkCommandBuffer>& command_buffers, VkRenderPass render_pass,
+    const std::vector<VkFramebuffer> framebuffers, VkExtent2D swapchain_extent,
+    VkPipeline pipeline)
+{
+    for (unsigned i = 0; i < command_buffers.size(); i++) {
+        VkCommandBufferBeginInfo begin_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .pInheritanceInfo = nullptr,
+        };
+        vkBeginCommandBuffer(command_buffers[i], &begin_info);
+
+        VkClearValue clear_color = {
+            .color = {.float32{0.0f, 0.0f, 0.0f, 1.0f}}
+        };
+        VkRenderPassBeginInfo render_pass_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .pNext = nullptr,
+            .renderPass = render_pass,
+            .framebuffer = framebuffers[i],
+            .renderArea = {
+                .offset = {.x = 0, .y = 0},
+                .extent = swapchain_extent,
+            },
+            .clearValueCount = 1,
+            .pClearValues = &clear_color,
+        };
+        vkCmdBeginRenderPass(command_buffers[i], &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdDraw(command_buffers[i], 3, 1, 0, 0);
+        vkCmdEndRenderPass(command_buffers[i]);
+
+        vkEndCommandBuffer(command_buffers[i]);
+    }
+}
+
+VkSemaphore createSemaphore(VkDevice device) {
+    VkSemaphoreCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    };
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    vkCreateSemaphore(device, &create_info, nullptr, &semaphore);
+    return semaphore;
+}
+
+std::vector<VkSemaphore> createSemaphores(VkDevice device, unsigned num_semaphores) {
+    std::vector<VkSemaphore> semaphores{num_semaphores};
+    std::generate(semaphores.begin(), semaphores.end(), [&]() { return createSemaphore(device); });
+    return semaphores;
+}
+
+void destroySemaphores(VkDevice device, std::vector<VkSemaphore>& semaphores) {
+    for (auto& semaphore: semaphores) {
+        vkDestroySemaphore(device, semaphore, nullptr);
+    }
+    semaphores.clear();
+}
+
+VkFence createFence(VkDevice device) {
+    VkFenceCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+    VkFence fence;
+    vkCreateFence(device, &create_info, nullptr, &fence);
+    return fence;
+};
+
+void destroyFences(VkDevice device, std::vector<VkFence>& fences) {
+    for (auto& fence: fences) {
+        vkDestroyFence(device, fence, nullptr);
+    }
+    fences.clear();
+}
+
+std::vector<VkFence> createFences(VkDevice device, unsigned num_fences) {
+    std::vector<VkFence> fences{num_fences};
+    std::generate(fences.begin(), fences.end(), [&]() { return createFence(device); } );
+    return fences;
+};
+
+void submitDraw(
+    VkQueue queue, VkCommandBuffer command_buffer,
+    VkSemaphore wait_semaphore, VkSemaphore signal_semaphore,
+    VkFence signal_fence)
+{
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &wait_semaphore,
+        .pWaitDstStageMask = &wait_stage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &signal_semaphore,
+    };
+    vkQueueSubmit(queue, 1, &submit_info, signal_fence);
+}
+
+void submitPresent(VkQueue queue, VkSwapchainKHR swapchain, unsigned image, VkSemaphore wait_semaphore) {
+    VkPresentInfoKHR present_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &wait_semaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image,
+        .pResults = nullptr,
+    };
+    vkQueuePresentKHR(queue, &present_info);
+}
+
+void mainLoop(
+    SDL_Window* window, VkDevice device,
+    VkSwapchainKHR swapchain, const Queues& queues,
+    const std::vector<VkCommandBuffer>& command_buffers)
+{
+    auto num_swapchain_images = command_buffers.size();
+    auto acquire_semaphores = createSemaphores(device, num_swapchain_images);
+    auto render_semaphores = createSemaphores(device, num_swapchain_images);
+    // Fences are used so that no more frames are being rendered at the same
+    // time than there are swapchain images.
+    auto frame_fences = createFences(device, num_swapchain_images);
+    // The swapchain might return an image whose index differs from the current
+    // frame's. In this case waiting on the current frame's fence will not be
+    // sufficient, as the image might still be accessed by another frame's commands.
+    // Store the fence of the last frame that rendered to an image to wait
+    // for all accesses to be done.
+    std::vector<VkFence> image_fences{num_swapchain_images, VK_NULL_HANDLE};
+
+    unsigned frame = 0;
+    while (!shouldClose(window)) {
+        constexpr auto uint64_t_max = std::numeric_limits<uint64_t>::max();
+
+        auto& acquire_semaphore = acquire_semaphores[frame];
+        auto& render_semaphore = render_semaphores[frame];
+        auto& frame_fence = frame_fences[frame];
+
+        unsigned image = 0;
+        vkAcquireNextImageKHR(device, swapchain, uint64_t_max, acquire_semaphore, VK_NULL_HANDLE, &image);
+
+        auto& image_fence = image_fences[image];
+        auto& command_buffer = command_buffers[image];
+
+        if (image_fence != VK_NULL_HANDLE) {
+            vkWaitForFences(device, 1, &image_fence, true, uint64_t_max);
+        }
+        image_fence = frame_fence;
+        vkWaitForFences(device, 1, &frame_fence, true, uint64_t_max);
+        vkResetFences(device, 1, &frame_fence);
+
+        submitDraw(queues.graphics, command_buffer, acquire_semaphore, render_semaphore, frame_fence);
+        submitPresent(queues.present, swapchain, image, render_semaphore);
+        SDL_UpdateWindowSurface(window);
+
+        frame = (frame + 1) % num_swapchain_images;
+    }
+    vkDeviceWaitIdle(device);
+
+    destroyFences(device, frame_fences);
+    destroySemaphores(device, render_semaphores);
+    destroySemaphores(device, acquire_semaphores);
+}
+
 int main() {
     SDL_SetMainReady();
     SDL_Init(SDL_INIT_EVERYTHING);
@@ -819,11 +1028,14 @@ int main() {
     auto render_pass = createRenderPass(device, surface_format);
     auto pipeline = createPipeline(device, swapchain_extent, pipeline_layout, render_pass);
     auto framebuffers = createSwapchainFramebuffers(device, render_pass, views, swapchain_extent);
+    auto command_pool = createCommandPool(device, queue_families.graphics.value());
+    auto command_buffers = allocateCommandBuffers(device, command_pool, framebuffers.size());
+    recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain_extent, pipeline);
+    
+    mainLoop(window, device, swapchain, queues, command_buffers);
 
-    while (!shouldClose(window)) {
-        SDL_UpdateWindowSurface(window);
-    }
-
+    vkFreeCommandBuffers(device, command_pool, command_buffers.size(), command_buffers.data());
+    vkDestroyCommandPool(device, command_pool, nullptr);
     for (auto& framebuffer: framebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
