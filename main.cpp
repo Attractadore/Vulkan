@@ -1006,6 +1006,7 @@ void mainLoop(
 
 int main() {
     SDL_SetMainReady();
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
     SDL_Init(SDL_INIT_EVERYTHING);
 
     auto window = createWindow(1280, 720);
