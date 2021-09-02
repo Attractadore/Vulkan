@@ -361,7 +361,7 @@ VkPhysicalDevice selectGPU(VkInstance instance, VkSurfaceKHR surface) {
 
     auto it = std::max_element(
         gpus.begin(), gpus.end(),
-        [&](const auto& lhs, const auto& rhs) { return gpuScore(lhs) > gpuScore(rhs); }
+        [&](const auto& lhs, const auto& rhs) { return gpuScore(lhs) < gpuScore(rhs); }
     );
     auto gpu = *it;
     util::log << "Select " << gpuName(gpu) << "\n";
