@@ -11,7 +11,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace util {
@@ -359,8 +358,14 @@ VkPhysicalDevice selectGPU(VkInstance instance, VkSurfaceKHR surface) {
 
 VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilyIndices& queue_families) {
     float priority = 1.0f;
-    std::unordered_set<unsigned> queue_family_indices =
+    std::vector<unsigned> queue_family_indices =
         {queue_families.graphics.value(), queue_families.present.value()};
+    std::sort(queue_family_indices.begin(), queue_family_indices.end());
+    {
+        auto new_end = std::unique(queue_family_indices.begin(), queue_family_indices.end());
+        auto new_size = std::distance(queue_family_indices.begin(), new_end);
+        queue_family_indices.resize(new_size);
+    }
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
     for (const auto& i: queue_family_indices) {
         VkDeviceQueueCreateInfo queue_create_info = {
