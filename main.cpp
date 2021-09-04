@@ -1,7 +1,6 @@
 #include <vulkan/vulkan.h>
-#define SDL_MAIN_HANDLED
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
+
+#include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <array>
@@ -66,30 +65,20 @@ std::vector<std::byte> loadBinaryFile(const std::string& path) {
 }
 }  // namespace util
 
-SDL_Window* createWindow(unsigned width, unsigned height) {
-    return SDL_CreateWindow(
-        "Vulkan tutorial",
-        SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-        width, height,
-        SDL_WINDOW_VULKAN
-    );
+GLFWwindow* createWindow(unsigned width, unsigned height) {
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, false);
+    return glfwCreateWindow(width, height, "Vulkan Tutorial", nullptr, nullptr);
 }
 
-bool shouldClose(SDL_Window* window) {
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_WINDOWEVENT and
-            e.window.windowID == SDL_GetWindowID(window) and
-            e.window.event == SDL_WINDOWEVENT_CLOSE) {
-            return true;
-        }
-    }
-    return false;
+bool shouldClose(GLFWwindow* window) {
+    glfwPollEvents();
+    return glfwWindowShouldClose(window);
 }
 
-VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance) {
+VkSurfaceKHR createSurface(GLFWwindow* window, VkInstance instance) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
-    SDL_Vulkan_CreateSurface(window, instance, &surface);
+    glfwCreateWindowSurface(instance, window, nullptr, &surface);
     return surface;
 }
 
@@ -180,7 +169,7 @@ bool instanceLayersAvailable(const S& layers) {
     );
 }
 
-VkInstance createInstance(SDL_Window* window) {
+VkInstance createInstance() {
     const std::array<const char*, 1> validation_layers = {"VK_LAYER_KHRONOS_validation"};
     auto validation_layer_count =
     [&]() -> unsigned {
@@ -200,9 +189,8 @@ VkInstance createInstance(SDL_Window* window) {
     }();
 
     unsigned num_extensions = 0;
-    SDL_Vulkan_GetInstanceExtensions(window, &num_extensions, nullptr);
-    std::vector<const char*> extensions{num_extensions};
-    SDL_Vulkan_GetInstanceExtensions(window, &num_extensions, extensions.data());
+    const char** extensions_array = glfwGetRequiredInstanceExtensions(&num_extensions);
+    std::vector<const char*> extensions{extensions_array, extensions_array + num_extensions};
     if (validation_layer_count) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
@@ -439,7 +427,7 @@ selectPresentMode(const std::vector<VkPresentModeKHR>& present_modes) {
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D selectSwapchainExtent(SDL_Window* window, const VkSurfaceCapabilitiesKHR& capabilities) {
+VkExtent2D selectSwapchainExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& capabilities) {
     VkExtent2D special_value = {
         .width = std::numeric_limits<decltype(special_value.width)>::max(),
         .height = std::numeric_limits<decltype(special_value.height)>::max(),
@@ -448,7 +436,7 @@ VkExtent2D selectSwapchainExtent(SDL_Window* window, const VkSurfaceCapabilities
         capabilities.currentExtent.height == special_value.height) {
         int w = 0;
         int h = 0;
-        SDL_Vulkan_GetDrawableSize(window, &w, &h);
+        glfwGetFramebufferSize(window, &w, &h);
         return {
             .width = std::clamp<unsigned>(
                 w, capabilities.minImageExtent.width, capabilities.maxImageExtent.width
@@ -463,7 +451,7 @@ VkExtent2D selectSwapchainExtent(SDL_Window* window, const VkSurfaceCapabilities
 }
 
 VkSwapchainKHR createSwapchain(
-    SDL_Window* window, VkSurfaceKHR surface,
+    GLFWwindow* window, VkSurfaceKHR surface,
     VkPhysicalDevice gpu, VkDevice device,
     const QueueFamilyIndices& queue_families)
 {
@@ -953,7 +941,7 @@ void submitPresent(VkQueue queue, VkSwapchainKHR swapchain, unsigned image, VkSe
 }
 
 void mainLoop(
-    SDL_Window* window, VkDevice device,
+    GLFWwindow* window, VkDevice device,
     VkSwapchainKHR swapchain, const Queues& queues,
     const std::vector<VkCommandBuffer>& command_buffers)
 {
@@ -993,7 +981,7 @@ void mainLoop(
 
         submitDraw(queues.graphics, command_buffer, acquire_semaphore, render_semaphore, frame_fence);
         submitPresent(queues.present, swapchain, image, render_semaphore);
-        SDL_UpdateWindowSurface(window);
+        glfwSwapBuffers(window);
 
         frame = (frame + 1) % num_swapchain_images;
     }
@@ -1005,12 +993,10 @@ void mainLoop(
 }
 
 int main() {
-    SDL_SetMainReady();
-    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-    SDL_Init(SDL_INIT_EVERYTHING);
+    glfwInit();
 
+    auto instance = createInstance();
     auto window = createWindow(1280, 720);
-    auto instance = createInstance(window);
     auto surface = createSurface(window, instance);
     auto debug_messenger =
         util::is_debug ? createDebugMessenger(instance) : VK_NULL_HANDLE;
@@ -1051,7 +1037,7 @@ int main() {
     destroyDebugMessenger(instance, debug_messenger);
     vkDestroySurfaceKHR(instance, surface, nullptr);
     vkDestroyInstance(instance, nullptr);
-    SDL_DestroyWindow(window);
+    glfwDestroyWindow(window);
 
-    SDL_Quit();
+    glfwTerminate();
 }
