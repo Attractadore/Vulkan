@@ -219,12 +219,12 @@ struct VulkanWindow {
     VkSurfaceKHR surface;
 };
 
-VulkanWindow createVulkanWindow(VulkanInstance& vi, unsigned width, unsigned height) {
+VulkanWindow createVulkanWindow(VkInstance instance, unsigned width, unsigned height) {
     VulkanWindow vw{};
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, false);
     vw.window = glfwCreateWindow(width, height, "Vulkan Tutorial", nullptr, nullptr);
-    glfwCreateWindowSurface(vi.instance, vw.window, nullptr, &vw.surface);
+    glfwCreateWindowSurface(instance, vw.window, nullptr, &vw.surface);
     return vw;
 }
 
@@ -233,79 +233,28 @@ bool shouldClose(VulkanWindow& vw) {
     return glfwWindowShouldClose(vw.window);
 }
 
-void destroyVulkanWindow(VulkanInstance& vi, VulkanWindow& vw) {
-    vkDestroySurfaceKHR(vi.instance, vw.surface, nullptr);
+void destroyVulkanWindow(VkInstance instance, VulkanWindow& vw) {
+    vkDestroySurfaceKHR(instance, vw.surface, nullptr);
     glfwDestroyWindow(vw.window);
 }
 
-unsigned gpuScore(VkPhysicalDevice gpu) {
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(gpu, &props);
-    return props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+std::vector<const char*> getGPUExtensions() {
+    return {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 }
 
-std::string gpuName(VkPhysicalDevice gpu) {
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(gpu, &props);
-    return props.deviceName;
-}
-
-template <typename S>
-bool gpuExtensionsSupported(VkPhysicalDevice gpu, const S& extensions) {
-    unsigned num_gpu_extensions = 0;
-    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &num_gpu_extensions, nullptr);
-    std::vector<VkExtensionProperties> gpu_extensions(num_gpu_extensions);
-    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &num_gpu_extensions, gpu_extensions.data());
-
-    return std::all_of(
-        std::begin(extensions), std::begin(extensions),
-        [&](const auto& extension) {
-            return util::contains_if(
-                gpu_extensions.begin(), gpu_extensions.end(),
-                [&](const auto& gpu_extension) {
-                    return std::strcmp(gpu_extension.extensionName, extension) == 0;
-                }
-            );
-        }
-    );
-}
-
-struct SwapchainInfo {
-    VkSurfaceCapabilitiesKHR capabilities;
-    std::vector<VkSurfaceFormatKHR> formats;
-    std::vector<VkPresentModeKHR> present_modes;
-};
-
-SwapchainInfo getSwapchainInfo(VkPhysicalDevice gpu, VkSurfaceKHR surface) {
-    SwapchainInfo info{};
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &info.capabilities);
-    unsigned num_formats = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &num_formats, nullptr);
-    info.formats.resize(num_formats);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &num_formats, info.formats.data());
-    unsigned num_present_modes = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &num_present_modes, nullptr);
-    info.present_modes.resize(num_present_modes);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &num_present_modes, info.present_modes.data());
-    return info;
-}
-
-bool gpuSwapchainSupported(VkPhysicalDevice gpu, VkSurfaceKHR surface) {
-    auto info = getSwapchainInfo(gpu, surface);
-    return info.formats.size() and info.present_modes.size();
-}
-
-struct QueueFamilyIndices {
+struct QueueFamilies {
     std::optional<unsigned> graphics;
     std::optional<unsigned> present;
 
-    explicit operator bool() const { return graphics and present; }
+    explicit operator bool() const {
+        return graphics and present;
+    }
 };
 
-std::optional<unsigned> findGraphicsQueueFamily(
+std::optional<unsigned> getGPUGraphicsQueueFamily(
     VkPhysicalDevice gpu,
-    const std::vector<VkQueueFamilyProperties>& queues)
-{
+    const std::vector<VkQueueFamilyProperties>& queues
+) {
     for (unsigned i = 0; i < queues.size(); i++) {
         if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
             return i;
@@ -314,10 +263,10 @@ std::optional<unsigned> findGraphicsQueueFamily(
     return {};
 }
 
-std::optional<unsigned> findPresentQueueFamily(
+std::optional<unsigned> getGPUPresentQueueFamily(
     VkPhysicalDevice gpu, VkSurfaceKHR surface,
-    const std::vector<VkQueueFamilyProperties>& queues)
-{
+    const std::vector<VkQueueFamilyProperties>& queues
+) {
     for (unsigned i = 0; i < queues.size(); i++) {
         VkBool32 has_present = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(gpu, i, surface, &has_present);
@@ -328,58 +277,127 @@ std::optional<unsigned> findPresentQueueFamily(
     return {};
 }
 
-QueueFamilyIndices getGPUQueueFamilies(VkPhysicalDevice gpu, VkSurfaceKHR surface) {
+QueueFamilies getGPUQueueFamilies(VkPhysicalDevice gpu, VkSurfaceKHR surface) {
     unsigned num_queues = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &num_queues, nullptr);
     std::vector<VkQueueFamilyProperties> queues{num_queues};
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &num_queues, queues.data());
 
     return {
-        .graphics = findGraphicsQueueFamily(gpu, queues),
-        .present = findPresentQueueFamily(gpu, surface, queues),
+        .graphics = getGPUGraphicsQueueFamily(gpu, queues),
+        .present = getGPUPresentQueueFamily(gpu, surface, queues),
     };
 }
 
-VkPhysicalDevice selectGPU(VkInstance instance, VkSurfaceKHR surface) {
-    unsigned num_gpus = 0;
-    vkEnumeratePhysicalDevices(instance, &num_gpus, nullptr);
-    if (!num_gpus) {
-        throw std::runtime_error("No GPUs with Vulkan support found");
-    }
-    std::vector<VkPhysicalDevice> gpus{num_gpus};
-    vkEnumeratePhysicalDevices(instance, &num_gpus, gpus.data());
-    util::log << "Available GPUs:\n";
-    for (const auto& gpu: gpus) {
-        util::log << gpuName(gpu) << "\n";
-    }
+struct SurfaceInfo {
+    VkSurfaceCapabilitiesKHR capabilities;
+    std::vector<VkSurfaceFormatKHR> formats;
+    std::vector<VkPresentModeKHR> present_modes;
+};
 
-    std::array<const char*, 1> required_extensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-    auto new_end = std::remove_if(
-        gpus.begin(), gpus.end(),
-        [&](const auto& gpu) {
-            return !(gpuExtensionsSupported(gpu, required_extensions) and
-                     gpuSwapchainSupported(gpu, surface) and
-                     getGPUQueueFamilies(gpu, surface));
+SurfaceInfo getGPUSurfaceInfo(VkPhysicalDevice gpu, VkSurfaceKHR surface) {
+    SurfaceInfo info{};
+
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &info.capabilities);
+
+    unsigned num_formats = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &num_formats, nullptr);
+    info.formats.resize(num_formats);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &num_formats, info.formats.data());
+
+    unsigned num_present_modes = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &num_present_modes, nullptr);
+    info.present_modes.resize(num_present_modes);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &num_present_modes, info.present_modes.data());
+
+    return info;
+}
+
+bool gpuExtensionsSupported(VkPhysicalDevice gpu) {
+    auto required = getGPUExtensions();
+
+    unsigned num_supported = 0;
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &num_supported, nullptr);
+    std::vector<VkExtensionProperties> supported(num_supported);
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &num_supported, supported.data());
+
+    return std::all_of(
+        required.begin(), required.end(),
+        [&](const auto& r) {
+            return util::contains_if(
+                supported.begin(), supported.end(),
+                [&](const auto& s) {
+                    return std::strcmp(s.extensionName, r) == 0;
+                }
+            );
         }
     );
-    gpus.resize(std::distance(gpus.begin(), new_end));
-    if (gpus.empty()) {
-        util::log << "No suitable GPUs available\n";
-        return VK_NULL_HANDLE;
+}
+
+bool gpuSurfaceSupported(VkPhysicalDevice gpu, const SurfaceInfo& surface_info) {
+    return surface_info.formats.size() and surface_info.present_modes.size();
+}
+
+struct VulkanGPU {
+    VkPhysicalDevice gpu;
+    QueueFamilies queue_families;
+    SurfaceInfo surface_info;
+};
+
+std::vector<VulkanGPU> getInstanceGPUs(VkInstance instance, VkSurfaceKHR surface) {
+    unsigned num_gpus = 0;
+    vkEnumeratePhysicalDevices(instance, &num_gpus, nullptr);
+    std::vector<VkPhysicalDevice> gpus(num_gpus);
+    vkEnumeratePhysicalDevices(instance, &num_gpus, gpus.data());
+
+    std::vector<VulkanGPU> vgpus(gpus.size());
+    for (unsigned i = 0; i < gpus.size(); i++) {
+        vgpus[i] = {
+            .gpu = gpus[i],
+            .queue_families = getGPUQueueFamilies(gpus[i], surface),
+            .surface_info = getGPUSurfaceInfo(gpus[i], surface),
+        };
     }
 
-    auto it = std::max_element(
+    return vgpus;
+}
+
+unsigned gpuScore(VulkanGPU gpu) {
+    if (gpuExtensionsSupported(gpu.gpu) and
+        gpuSurfaceSupported(gpu.gpu, gpu.surface_info) and
+        gpu.queue_families) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(gpu.gpu, &props);
+        return (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) ? 2 : 1;
+    }
+    return 0;
+}
+
+std::string gpuName(VkPhysicalDevice gpu) {
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(gpu, &props);
+    return props.deviceName;
+}
+
+VulkanGPU selectVulkanGPU(VkInstance instance, VkSurfaceKHR surface) {
+    auto gpus = getInstanceGPUs(instance, surface);
+    auto gpu = *std::max_element(
         gpus.begin(), gpus.end(),
-        [&](const auto& lhs, const auto& rhs) { return gpuScore(lhs) < gpuScore(rhs); }
+        [&](const auto& lhs, const auto& rhs) {
+            return gpuScore(lhs) < gpuScore(rhs);
+        }
     );
-    auto gpu = *it;
-    util::log << "Select " << gpuName(gpu) << "\n";
+
+    util::log << "Available GPUs:\n";
+    for (const auto& gpu: gpus) {
+        util::log << gpuName(gpu.gpu) << "\n";
+    }
+    util::log << "Select " << gpuName(gpu.gpu) << "\n";
 
     return gpu;
 }
 
-VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilyIndices& queue_families) {
+VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilies& queue_families) {
     float priority = 1.0f;
     std::vector<unsigned> queue_family_indices =
         {queue_families.graphics.value(), queue_families.present.value()};
@@ -427,7 +445,7 @@ struct Queues {
     VkQueue present;
 };
 
-Queues getDeviceQueues(VkDevice device, const QueueFamilyIndices& queue_families) {
+Queues getDeviceQueues(VkDevice device, const QueueFamilies& queue_families) {
     Queues queues;
     vkGetDeviceQueue(device, queue_families.graphics.value(), 0, &queues.graphics);
     vkGetDeviceQueue(device, queue_families.present.value(), 0, &queues.present);
@@ -479,9 +497,9 @@ VkExtent2D selectSwapchainExtent(GLFWwindow* window, const VkSurfaceCapabilities
 VkSwapchainKHR createSwapchain(
     GLFWwindow* window, VkSurfaceKHR surface,
     VkPhysicalDevice gpu, VkDevice device,
-    const QueueFamilyIndices& queue_families)
+    const QueueFamilies& queue_families)
 {
-    auto info = getSwapchainInfo(gpu, surface);
+    auto info = getGPUSurfaceInfo(gpu, surface);
     auto format = selectSurfaceFormat(info.formats);
     auto present_mode = selectPresentMode(info.present_modes);
     auto extent = selectSwapchainExtent(window, info.capabilities);
@@ -1022,19 +1040,18 @@ void mainLoop(
 }
 
 void run() {
-    auto instance = createVulkanInstance();
-    auto window = createVulkanWindow(instance, 1280, 720);
+    auto vi = createVulkanInstance();
+    auto vw = createVulkanWindow(vi.instance, 1280, 720);
+    auto gpu = selectVulkanGPU(vi.instance, vw.surface);
 
-    auto gpu = selectGPU(instance.instance, window.surface);
-    auto queue_families = getGPUQueueFamilies(gpu, window.surface);
-    auto device = createDevice(gpu, queue_families);
-    auto queues = getDeviceQueues(device, queue_families);
+    auto device = createDevice(gpu.gpu, gpu.queue_families);
+    auto queues = getDeviceQueues(device, gpu.queue_families);
 
-    auto swapchain_info = getSwapchainInfo(gpu, window.surface);
+    auto swapchain_info = getGPUSurfaceInfo(gpu.gpu, vw.surface);
     auto surface_format = selectSurfaceFormat(swapchain_info.formats).format;
-    auto swapchain_extent = selectSwapchainExtent(window.window, swapchain_info.capabilities);
+    auto swapchain_extent = selectSwapchainExtent(vw.window, swapchain_info.capabilities);
     auto swapchain =
-        createSwapchain(window.window, window.surface, gpu, device, queue_families);
+        createSwapchain(vw.window, vw.surface, gpu.gpu, device, gpu.queue_families);
     auto images = getSwapchainImages(device, swapchain);
 
     auto render_pass = createRenderPass(device, surface_format);
@@ -1043,11 +1060,11 @@ void run() {
     auto views = createImageViews(device, surface_format, images);
     auto framebuffers = createSwapchainFramebuffers(device, render_pass, views, swapchain_extent);
 
-    auto command_pool = createCommandPool(device, queue_families.graphics.value());
+    auto command_pool = createCommandPool(device, gpu.queue_families.graphics.value());
     auto command_buffers = allocateCommandBuffers(device, command_pool, framebuffers.size());
     recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain_extent, pipeline);
     
-    mainLoop(window, device, swapchain, queues, command_buffers);
+    mainLoop(vw, device, swapchain, queues, command_buffers);
 
     vkFreeCommandBuffers(device, command_pool, command_buffers.size(), command_buffers.data());
     vkDestroyCommandPool(device, command_pool, nullptr);
@@ -1066,8 +1083,8 @@ void run() {
 
     vkDestroyDevice(device, nullptr);
 
-    destroyVulkanWindow(instance, window);
-    destroyVulkanInstance(instance);
+    destroyVulkanWindow(vi.instance, vw);
+    destroyVulkanInstance(vi);
 }
 
 int main() {
