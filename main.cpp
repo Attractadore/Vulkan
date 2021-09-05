@@ -411,8 +411,7 @@ Queues getDeviceQueues(VkDevice device, const QueueFamilyIndices& queue_families
     return queues;
 }
 
-VkSurfaceFormatKHR
-selectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
+VkSurfaceFormatKHR selectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
     for (const auto& f: formats) {
         if (f.format == VK_FORMAT_B8G8R8A8_SRGB and
             f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -422,8 +421,7 @@ selectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
     return formats.front();
 }
 
-VkPresentModeKHR
-selectPresentMode(const std::vector<VkPresentModeKHR>& present_modes) {
+VkPresentModeKHR selectPresentMode(const std::vector<VkPresentModeKHR>& present_modes) {
     for (const auto& pm: present_modes) {
         if (pm == VK_PRESENT_MODE_MAILBOX_KHR) {
             return VK_PRESENT_MODE_MAILBOX_KHR;
