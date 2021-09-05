@@ -64,23 +64,6 @@ std::vector<std::byte> loadBinaryFile(const std::string& path) {
 }
 }  // namespace util
 
-GLFWwindow* createWindow(unsigned width, unsigned height) {
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, false);
-    return glfwCreateWindow(width, height, "Vulkan Tutorial", nullptr, nullptr);
-}
-
-bool shouldClose(GLFWwindow* window) {
-    glfwPollEvents();
-    return glfwWindowShouldClose(window);
-}
-
-VkSurfaceKHR createSurface(GLFWwindow* window, VkInstance instance) {
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    glfwCreateWindowSurface(instance, window, nullptr, &surface);
-    return surface;
-}
-
 namespace {
 VKAPI_ATTR VkBool32 VKAPI_CALL debugErrorCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -105,49 +88,40 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugInfoCallback(
 }
 }  // namespace
 
-VkDebugUtilsMessengerCreateInfoEXT getDebugMessengerDefaultCreateInfo() {
-    return {
-        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        .pNext = nullptr,
-        .flags = 0,
-        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-        .pfnUserCallback = debugErrorCallback,
-        .pUserData = nullptr,
-    };
-}
-
-VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance) {
+VkResult createDebugMessenger(
+    VkInstance instance,
+    const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+    const VkAllocationCallbacks* pAllocator,
+    VkDebugUtilsMessengerEXT* pMessenger
+) {
     auto f = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
         vkGetInstanceProcAddr(instance, STRING(vkCreateDebugUtilsMessengerEXT))
     );
-    if (!f) {
-        util::error(
-            VK_ERROR_EXTENSION_NOT_PRESENT,
-            "Failed to create Vulkan debug messenger"
-        );
+    if (f) {
+        return f(instance, pCreateInfo, pAllocator, pMessenger);
     }
-
-    VkDebugUtilsMessengerCreateInfoEXT create_info =
-        getDebugMessengerDefaultCreateInfo();
-    VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
-    f(instance, &create_info, nullptr, &messenger);
-
-    return messenger;
+    else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
 }
 
-void destroyDebugMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger) {
+void destroyDebugMessenger(
+    VkInstance instance,
+    VkDebugUtilsMessengerEXT messenger,
+    const VkAllocationCallbacks* pAllocator
+) {
     auto f = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
         vkGetInstanceProcAddr(instance, STRING(vkDestroyDebugUtilsMessengerEXT))
     );
     if (f) {
-        f(instance, messenger, nullptr);
+        f(instance, messenger, pAllocator);
     }
 }
+
+struct VulkanInstance {
+    VkInstance instance;
+    VkDebugUtilsMessengerEXT messenger;
+};
 
 template <typename S>
 bool instanceLayersAvailable(const S& layers) {
@@ -168,51 +142,100 @@ bool instanceLayersAvailable(const S& layers) {
     );
 }
 
-VkInstance createInstance() {
-    const std::array<const char*, 1> validation_layers = {"VK_LAYER_KHRONOS_validation"};
-    auto validation_layer_count =
-    [&]() -> unsigned {
-        if (util::is_debug) {
-            for (const auto& l: validation_layers) {
-                util::log << "Request layer " << l << "\n";
-            }
-            if (!instanceLayersAvailable(validation_layers)) {
-                util::error_log << "Not all requested layers are available!\n";
-                return 0;
-            } else {
-                return validation_layers.size();
-            }
-        } else {
-            return 0;
-        }
-    }();
+std::vector<const char*> getInstanceLayers() {
+    std::vector<const char*> layers;
+    if constexpr (util::is_debug) {
+        layers.push_back("VK_LAYER_KHRONOS_validation");
+    }
+    return layers;
+}
 
+std::vector<const char*> getInstanceExtensions() {
     unsigned num_extensions = 0;
     const char** extensions_array = glfwGetRequiredInstanceExtensions(&num_extensions);
     std::vector<const char*> extensions{extensions_array, extensions_array + num_extensions};
-    if (validation_layer_count) {
+    if constexpr (util::is_debug) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+    return extensions;
+}
+
+VulkanInstance createVulkanInstance() {
+    VulkanInstance vi{};
+
+    auto layers = getInstanceLayers();
+    auto extensions = getInstanceExtensions();
+    for (const auto& l: layers) {
+        util::log << "Request layer " << l << "\n";
     }
     for (const auto& e: extensions) {
         util::log << "Require instance extension " << e << "\n";
     }
 
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info =
-        getDebugMessengerDefaultCreateInfo();
-    VkInstanceCreateInfo create_info = {
+    VkDebugUtilsMessengerCreateInfoEXT messenger_create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .pNext = nullptr,
+        .flags = 0,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        .pfnUserCallback = debugErrorCallback,
+        .pUserData = nullptr,
+    };
+
+    VkInstanceCreateInfo instance_create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = util::is_debug ? &debug_messenger_create_info : nullptr,
+        .pNext = util::is_debug ? &messenger_create_info : nullptr,
         .flags = 0,
         .pApplicationInfo = nullptr,
-        .enabledLayerCount = validation_layer_count,
-        .ppEnabledLayerNames = validation_layers.data(),
-        .enabledExtensionCount = static_cast<unsigned>(extensions.size()),
+        .enabledLayerCount =
+            static_cast<decltype(instance_create_info.enabledLayerCount)>(layers.size()),
+        .ppEnabledLayerNames = layers.data(),
+        .enabledExtensionCount =
+            static_cast<decltype(instance_create_info.enabledExtensionCount)>(extensions.size()),
         .ppEnabledExtensionNames = extensions.data(),
     };
-    VkInstance instance = VK_NULL_HANDLE;
-    vkCreateInstance(&create_info, nullptr, &instance);
 
-    return instance;
+    vkCreateInstance(&instance_create_info, nullptr, &vi.instance);
+    if constexpr (util::is_debug) {
+        createDebugMessenger(vi.instance, &messenger_create_info, nullptr, &vi.messenger);
+    }
+
+    return vi;
+}
+
+void destroyVulkanInstance(VulkanInstance& vi) {
+    if constexpr (util::is_debug) {
+        destroyDebugMessenger(vi.instance, vi.messenger, nullptr);
+    }
+    vkDestroyInstance(vi.instance, nullptr);
+}
+
+struct VulkanWindow {
+    GLFWwindow* window;
+    VkSurfaceKHR surface;
+};
+
+VulkanWindow createVulkanWindow(VulkanInstance& vi, unsigned width, unsigned height) {
+    VulkanWindow vw{};
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, false);
+    vw.window = glfwCreateWindow(width, height, "Vulkan Tutorial", nullptr, nullptr);
+    glfwCreateWindowSurface(vi.instance, vw.window, nullptr, &vw.surface);
+    return vw;
+}
+
+bool shouldClose(VulkanWindow& vw) {
+    glfwPollEvents();
+    return glfwWindowShouldClose(vw.window);
+}
+
+void destroyVulkanWindow(VulkanInstance& vi, VulkanWindow& vw) {
+    vkDestroySurfaceKHR(vi.instance, vw.surface, nullptr);
+    glfwDestroyWindow(vw.window);
 }
 
 unsigned gpuScore(VkPhysicalDevice gpu) {
@@ -947,7 +970,7 @@ void submitPresent(VkQueue queue, VkSwapchainKHR swapchain, unsigned image, VkSe
 }
 
 void mainLoop(
-    GLFWwindow* window, VkDevice device,
+    VulkanWindow vw, VkDevice device,
     VkSwapchainKHR swapchain, const Queues& queues,
     const std::vector<VkCommandBuffer>& command_buffers)
 {
@@ -965,7 +988,7 @@ void mainLoop(
     std::vector<VkFence> image_fences{num_swapchain_images, VK_NULL_HANDLE};
 
     unsigned frame = 0;
-    while (!shouldClose(window)) {
+    while (!shouldClose(vw)) {
         constexpr auto uint64_t_max = std::numeric_limits<uint64_t>::max();
 
         auto& acquire_semaphore = acquire_semaphores[frame];
@@ -987,7 +1010,7 @@ void mainLoop(
 
         submitDraw(queues.graphics, command_buffer, acquire_semaphore, render_semaphore, frame_fence);
         submitPresent(queues.present, swapchain, image, render_semaphore);
-        glfwSwapBuffers(window);
+        glfwSwapBuffers(vw.window);
 
         frame = (frame + 1) % num_swapchain_images;
     }
@@ -999,23 +1022,19 @@ void mainLoop(
 }
 
 void run() {
-    auto instance = createInstance();
-    auto debug_messenger =
-        util::is_debug ? createDebugMessenger(instance) : VK_NULL_HANDLE;
+    auto instance = createVulkanInstance();
+    auto window = createVulkanWindow(instance, 1280, 720);
 
-    auto window = createWindow(1280, 720);
-    auto surface = createSurface(window, instance);
-
-    auto gpu = selectGPU(instance, surface);
-    auto queue_families = getGPUQueueFamilies(gpu, surface);
+    auto gpu = selectGPU(instance.instance, window.surface);
+    auto queue_families = getGPUQueueFamilies(gpu, window.surface);
     auto device = createDevice(gpu, queue_families);
     auto queues = getDeviceQueues(device, queue_families);
 
-    auto swapchain_info = getSwapchainInfo(gpu, surface);
+    auto swapchain_info = getSwapchainInfo(gpu, window.surface);
     auto surface_format = selectSurfaceFormat(swapchain_info.formats).format;
-    auto swapchain_extent = selectSwapchainExtent(window, swapchain_info.capabilities);
+    auto swapchain_extent = selectSwapchainExtent(window.window, swapchain_info.capabilities);
     auto swapchain =
-        createSwapchain(window, surface, gpu, device, queue_families);
+        createSwapchain(window.window, window.surface, gpu, device, queue_families);
     auto images = getSwapchainImages(device, swapchain);
 
     auto render_pass = createRenderPass(device, surface_format);
@@ -1047,11 +1066,8 @@ void run() {
 
     vkDestroyDevice(device, nullptr);
 
-    vkDestroySurfaceKHR(instance, surface, nullptr);
-    glfwDestroyWindow(window);
-
-    destroyDebugMessenger(instance, debug_messenger);
-    vkDestroyInstance(instance, nullptr);
+    destroyVulkanWindow(instance, window);
+    destroyVulkanInstance(instance);
 }
 
 int main() {
