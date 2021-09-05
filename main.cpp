@@ -997,9 +997,7 @@ void mainLoop(
     destroySemaphores(device, acquire_semaphores);
 }
 
-int main() {
-    glfwInit();
-
+void run() {
     auto instance = createInstance();
     auto window = createWindow(1280, 720);
     auto surface = createSurface(window, instance);
@@ -1043,6 +1041,10 @@ int main() {
     vkDestroySurfaceKHR(instance, surface, nullptr);
     vkDestroyInstance(instance, nullptr);
     glfwDestroyWindow(window);
+}
 
+int main() {
+    glfwInit();
+    run();
     glfwTerminate();
 }
