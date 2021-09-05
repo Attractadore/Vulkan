@@ -642,7 +642,7 @@ VkPipelineShaderStageCreateInfo getPipelineShaderStageCreateInfo(
 
 VkPipeline createPipeline(
     VkDevice device, VkExtent2D swapchain_extent,
-    VkPipelineLayout layout, VkRenderPass render_pass) 
+    VkRenderPass render_pass)
 {
     constexpr auto vert_name = "shader.vert.spv";
     constexpr auto frag_name = "shader.frag.spv";
@@ -745,6 +745,8 @@ VkPipeline createPipeline(
         .pAttachments = &color_blend_attachment,
     };
 
+    auto layout = createPipelineLayout(device);
+
     VkGraphicsPipelineCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
@@ -770,6 +772,7 @@ VkPipeline createPipeline(
     VkPipeline pipeline = VK_NULL_HANDLE;
     vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create_info, nullptr, &pipeline);
 
+    vkDestroyPipelineLayout(device, layout, nullptr);
     vkDestroyShaderModule(device, vertModule, nullptr);
     vkDestroyShaderModule(device, fragModule, nullptr);
 
@@ -999,25 +1002,30 @@ void mainLoop(
 
 void run() {
     auto instance = createInstance();
-    auto window = createWindow(1280, 720);
-    auto surface = createSurface(window, instance);
     auto debug_messenger =
         util::is_debug ? createDebugMessenger(instance) : VK_NULL_HANDLE;
+
+    auto window = createWindow(1280, 720);
+    auto surface = createSurface(window, instance);
+
     auto gpu = selectGPU(instance, surface);
-    auto swapchain_info = getSwapchainInfo(gpu, surface);
-    auto surface_format = selectSurfaceFormat(swapchain_info.formats).format;
-    auto swapchain_extent = selectSwapchainExtent(window, swapchain_info.capabilities);
     auto queue_families = getGPUQueueFamilies(gpu, surface);
     auto device = createDevice(gpu, queue_families);
     auto queues = getDeviceQueues(device, queue_families);
+
+    auto swapchain_info = getSwapchainInfo(gpu, surface);
+    auto surface_format = selectSurfaceFormat(swapchain_info.formats).format;
+    auto swapchain_extent = selectSwapchainExtent(window, swapchain_info.capabilities);
     auto swapchain =
         createSwapchain(window, surface, gpu, device, queue_families);
     auto images = getSwapchainImages(device, swapchain);
-    auto views = createImageViews(device, surface_format, images);
-    auto pipeline_layout = createPipelineLayout(device);
+
     auto render_pass = createRenderPass(device, surface_format);
-    auto pipeline = createPipeline(device, swapchain_extent, pipeline_layout, render_pass);
+    auto pipeline = createPipeline(device, swapchain_extent, render_pass);
+
+    auto views = createImageViews(device, surface_format, images);
     auto framebuffers = createSwapchainFramebuffers(device, render_pass, views, swapchain_extent);
+
     auto command_pool = createCommandPool(device, queue_families.graphics.value());
     auto command_buffers = allocateCommandBuffers(device, command_pool, framebuffers.size());
     recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain_extent, pipeline);
@@ -1026,21 +1034,26 @@ void run() {
 
     vkFreeCommandBuffers(device, command_pool, command_buffers.size(), command_buffers.data());
     vkDestroyCommandPool(device, command_pool, nullptr);
+
     for (auto& framebuffer: framebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyRenderPass(device, render_pass, nullptr);
-    vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
     for (auto& view: views) {
         vkDestroyImageView(device, view, nullptr);
     }
+
+    vkDestroyPipeline(device, pipeline, nullptr);
+    vkDestroyRenderPass(device, render_pass, nullptr);
+
     vkDestroySwapchainKHR(device, swapchain, nullptr);
+
     vkDestroyDevice(device, nullptr);
-    destroyDebugMessenger(instance, debug_messenger);
+
     vkDestroySurfaceKHR(instance, surface, nullptr);
-    vkDestroyInstance(instance, nullptr);
     glfwDestroyWindow(window);
+
+    destroyDebugMessenger(instance, debug_messenger);
+    vkDestroyInstance(instance, nullptr);
 }
 
 int main() {
