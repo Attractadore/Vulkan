@@ -397,32 +397,49 @@ VulkanGPU selectVulkanGPU(VkInstance instance, VkSurfaceKHR surface) {
     return gpu;
 }
 
-VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilies& queue_families) {
-    float priority = 1.0f;
-    std::vector<unsigned> queue_family_indices =
-        {queue_families.graphics.value(), queue_families.present.value()};
+struct Queues {
+    VkQueue graphics;
+    VkQueue present;
+};
+
+struct VulkanDevice {
+    VkDevice device;
+    Queues queues;
+};
+
+std::vector<unsigned> getQueueFamilyIndices(const QueueFamilies& queue_families) {
+    std::vector<unsigned> queue_family_indices = {
+        queue_families.graphics.value(), queue_families.present.value()
+    };
     std::sort(queue_family_indices.begin(), queue_family_indices.end());
-    {
-        auto new_end = std::unique(queue_family_indices.begin(), queue_family_indices.end());
-        auto new_size = std::distance(queue_family_indices.begin(), new_end);
-        queue_family_indices.resize(new_size);
-    }
-    std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
-    for (const auto& i: queue_family_indices) {
-        VkDeviceQueueCreateInfo queue_create_info = {
+    queue_family_indices.erase(
+        std::unique(queue_family_indices.begin(), queue_family_indices.end()), queue_family_indices.end()
+    );
+    return queue_family_indices;
+}
+
+VulkanDevice createVulkanDevice(VulkanGPU& gpu) {
+    VulkanDevice vd{};
+
+    auto queue_family_indices = getQueueFamilyIndices(gpu.queue_families);
+    std::vector<VkDeviceQueueCreateInfo> queue_create_infos(queue_family_indices.size());
+    float priority = 1.0f;
+    for (unsigned i = 0; i < queue_create_infos.size(); i++) {
+        queue_create_infos[i] = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .queueFamilyIndex = i,
+            .queueFamilyIndex = queue_family_indices[i],
             .queueCount = 1,
             .pQueuePriorities = &priority,
         };
-        queue_create_infos.push_back(queue_create_info);
     }
-    std::array<const char*, 1> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+    auto extensions = getGPUExtensions();
     for (const auto& e: extensions) {
         util::log << "Require device extension " << e << "\n";
     }
+
     VkDeviceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = nullptr,
@@ -435,21 +452,16 @@ VkDevice createDevice(VkPhysicalDevice gpu, const QueueFamilies& queue_families)
         .ppEnabledExtensionNames = extensions.data(),
         .pEnabledFeatures = nullptr,
     };
-    VkDevice device = VK_NULL_HANDLE;
-    vkCreateDevice(gpu, &create_info, nullptr, &device);
-    return device;
+    vkCreateDevice(gpu.gpu, &create_info, nullptr, &vd.device);
+
+    vkGetDeviceQueue(vd.device, gpu.queue_families.graphics.value(), 0, &vd.queues.graphics);
+    vkGetDeviceQueue(vd.device, gpu.queue_families.present.value(), 0, &vd.queues.present);
+
+    return vd;
 }
 
-struct Queues {
-    VkQueue graphics;
-    VkQueue present;
-};
-
-Queues getDeviceQueues(VkDevice device, const QueueFamilies& queue_families) {
-    Queues queues;
-    vkGetDeviceQueue(device, queue_families.graphics.value(), 0, &queues.graphics);
-    vkGetDeviceQueue(device, queue_families.present.value(), 0, &queues.present);
-    return queues;
+void destroyVulkanDevice(VulkanDevice& vd) {
+    vkDestroyDevice(vd.device, nullptr);
 }
 
 VkSurfaceFormatKHR selectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats) {
@@ -1043,46 +1055,43 @@ void run() {
     auto vi = createVulkanInstance();
     auto vw = createVulkanWindow(vi.instance, 1280, 720);
     auto gpu = selectVulkanGPU(vi.instance, vw.surface);
-
-    auto device = createDevice(gpu.gpu, gpu.queue_families);
-    auto queues = getDeviceQueues(device, gpu.queue_families);
+    auto device = createVulkanDevice(gpu);
 
     auto swapchain_info = getGPUSurfaceInfo(gpu.gpu, vw.surface);
     auto surface_format = selectSurfaceFormat(swapchain_info.formats).format;
     auto swapchain_extent = selectSwapchainExtent(vw.window, swapchain_info.capabilities);
     auto swapchain =
-        createSwapchain(vw.window, vw.surface, gpu.gpu, device, gpu.queue_families);
-    auto images = getSwapchainImages(device, swapchain);
+        createSwapchain(vw.window, vw.surface, gpu.gpu, device.device, gpu.queue_families);
+    auto images = getSwapchainImages(device.device, swapchain);
 
-    auto render_pass = createRenderPass(device, surface_format);
-    auto pipeline = createPipeline(device, swapchain_extent, render_pass);
+    auto render_pass = createRenderPass(device.device, surface_format);
+    auto pipeline = createPipeline(device.device, swapchain_extent, render_pass);
 
-    auto views = createImageViews(device, surface_format, images);
-    auto framebuffers = createSwapchainFramebuffers(device, render_pass, views, swapchain_extent);
+    auto views = createImageViews(device.device, surface_format, images);
+    auto framebuffers = createSwapchainFramebuffers(device.device, render_pass, views, swapchain_extent);
 
-    auto command_pool = createCommandPool(device, gpu.queue_families.graphics.value());
-    auto command_buffers = allocateCommandBuffers(device, command_pool, framebuffers.size());
+    auto command_pool = createCommandPool(device.device, gpu.queue_families.graphics.value());
+    auto command_buffers = allocateCommandBuffers(device.device, command_pool, framebuffers.size());
     recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain_extent, pipeline);
     
-    mainLoop(vw, device, swapchain, queues, command_buffers);
+    mainLoop(vw, device.device, swapchain, device.queues, command_buffers);
 
-    vkFreeCommandBuffers(device, command_pool, command_buffers.size(), command_buffers.data());
-    vkDestroyCommandPool(device, command_pool, nullptr);
+    vkFreeCommandBuffers(device.device, command_pool, command_buffers.size(), command_buffers.data());
+    vkDestroyCommandPool(device.device, command_pool, nullptr);
 
     for (auto& framebuffer: framebuffers) {
-        vkDestroyFramebuffer(device, framebuffer, nullptr);
+        vkDestroyFramebuffer(device.device, framebuffer, nullptr);
     }
     for (auto& view: views) {
-        vkDestroyImageView(device, view, nullptr);
+        vkDestroyImageView(device.device, view, nullptr);
     }
 
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyRenderPass(device, render_pass, nullptr);
+    vkDestroyPipeline(device.device, pipeline, nullptr);
+    vkDestroyRenderPass(device.device, render_pass, nullptr);
 
-    vkDestroySwapchainKHR(device, swapchain, nullptr);
+    vkDestroySwapchainKHR(device.device, swapchain, nullptr);
 
-    vkDestroyDevice(device, nullptr);
-
+    destroyVulkanDevice(device);
     destroyVulkanWindow(vi.instance, vw);
     destroyVulkanInstance(vi);
 }
