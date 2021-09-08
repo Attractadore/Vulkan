@@ -506,51 +506,14 @@ VkExtent2D selectSwapchainExtent(GLFWwindow* window, const VkSurfaceCapabilities
     }
 }
 
-VkSwapchainKHR createSwapchain(
-    GLFWwindow* window, VkSurfaceKHR surface,
-    VkPhysicalDevice gpu, VkDevice device,
-    const QueueFamilies& queue_families)
-{
-    auto info = getGPUSurfaceInfo(gpu, surface);
-    auto format = selectSurfaceFormat(info.formats);
-    auto present_mode = selectPresentMode(info.present_modes);
-    auto extent = selectSwapchainExtent(window, info.capabilities);
-    unsigned image_count = info.capabilities.minImageCount + 1;
-    if (info.capabilities.maxImageCount) {
-        image_count = std::min(image_count, info.capabilities.maxImageCount);
+unsigned selectSwapchainImageCount(VkSurfaceCapabilitiesKHR capabilities) {
+    unsigned min_images = capabilities.minImageCount;
+    unsigned max_images = capabilities.maxImageCount;
+    unsigned image_count = min_images + 1;
+    if (max_images) {
+        image_count = std::min(image_count, max_images);
     }
-
-    bool exclusive =
-        queue_families.graphics.value() == queue_families.present.value();
-    std::array<unsigned, 2> queues =
-        {queue_families.graphics.value(), queue_families.present.value()};
-
-    VkSwapchainCreateInfoKHR create_info = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .pNext = nullptr,
-        .flags = 0,
-        .surface = surface,
-        .minImageCount = image_count,
-        .imageFormat = format.format,
-        .imageColorSpace = format.colorSpace,
-        .imageExtent = extent,
-        .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .imageSharingMode =
-            exclusive ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
-        .queueFamilyIndexCount =
-            exclusive ? 0 : static_cast<unsigned>(queues.size()),
-        .pQueueFamilyIndices = exclusive ? nullptr : queues.data(),
-        .preTransform = info.capabilities.currentTransform,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = present_mode,
-        .clipped = VK_TRUE,
-        .oldSwapchain = VK_NULL_HANDLE,
-    };
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    vkCreateSwapchainKHR(device, &create_info, nullptr, &swapchain);
-
-    return swapchain;
+    return image_count;
 }
 
 std::vector<VkImage> getSwapchainImages(VkDevice device, VkSwapchainKHR swapchain) {
@@ -559,6 +522,64 @@ std::vector<VkImage> getSwapchainImages(VkDevice device, VkSwapchainKHR swapchai
     std::vector<VkImage> images{num_images};
     vkGetSwapchainImagesKHR(device, swapchain, &num_images, images.data());
     return images;
+}
+
+struct VulkanSwapchain {
+    VkSwapchainKHR swapchain;
+    VkSurfaceFormatKHR format;
+    VkPresentModeKHR present_mode;
+    VkExtent2D extent;
+    std::vector<VkImage> images;
+};
+
+VulkanSwapchain createVulkanSwapchain(
+    VkDevice device, VulkanWindow& vw,
+    const SurfaceInfo& surface_info, const QueueFamilies& queue_families
+) {
+    VulkanSwapchain vs{};
+
+    vs.format = selectSurfaceFormat(surface_info.formats);
+    vs.present_mode = selectPresentMode(surface_info.present_modes);
+    vs.extent = selectSwapchainExtent(vw.window, surface_info.capabilities);
+    unsigned image_count = selectSwapchainImageCount(surface_info.capabilities);
+
+    bool exclusive =
+        queue_families.graphics.value() == queue_families.present.value();
+    std::array<unsigned, 2> queues = {
+        queue_families.graphics.value(), queue_families.present.value()
+    };
+
+    VkSwapchainCreateInfoKHR create_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext = nullptr,
+        .flags = 0,
+        .surface = vw.surface,
+        .minImageCount = image_count,
+        .imageFormat = vs.format.format,
+        .imageColorSpace = vs.format.colorSpace,
+        .imageExtent = vs.extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode =
+            exclusive ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+        .queueFamilyIndexCount =
+            exclusive ? 0 : static_cast<unsigned>(queues.size()),
+        .pQueueFamilyIndices = exclusive ? nullptr : queues.data(),
+        .preTransform = surface_info.capabilities.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = vs.present_mode,
+        .clipped = VK_TRUE,
+        .oldSwapchain = VK_NULL_HANDLE,
+    };
+    vkCreateSwapchainKHR(device, &create_info, nullptr, &vs.swapchain);
+
+    vs.images = getSwapchainImages(device, vs.swapchain);
+
+    return vs;
+}
+
+void destroyVulkanSwapchain(VkDevice device, VulkanSwapchain& vs) {
+    vkDestroySwapchainKHR(device, vs.swapchain, nullptr);
 }
 
 std::vector<VkImageView> createImageViews(VkDevice device, VkFormat format, const std::vector<VkImage> images) {
@@ -1056,25 +1077,19 @@ void run() {
     auto vw = createVulkanWindow(vi.instance, 1280, 720);
     auto gpu = selectVulkanGPU(vi.instance, vw.surface);
     auto device = createVulkanDevice(gpu);
+    auto swapchain = createVulkanSwapchain(device.device, vw, gpu.surface_info, gpu.queue_families);
 
-    auto swapchain_info = getGPUSurfaceInfo(gpu.gpu, vw.surface);
-    auto surface_format = selectSurfaceFormat(swapchain_info.formats).format;
-    auto swapchain_extent = selectSwapchainExtent(vw.window, swapchain_info.capabilities);
-    auto swapchain =
-        createSwapchain(vw.window, vw.surface, gpu.gpu, device.device, gpu.queue_families);
-    auto images = getSwapchainImages(device.device, swapchain);
+    auto render_pass = createRenderPass(device.device, swapchain.format.format);
+    auto pipeline = createPipeline(device.device, swapchain.extent, render_pass);
 
-    auto render_pass = createRenderPass(device.device, surface_format);
-    auto pipeline = createPipeline(device.device, swapchain_extent, render_pass);
-
-    auto views = createImageViews(device.device, surface_format, images);
-    auto framebuffers = createSwapchainFramebuffers(device.device, render_pass, views, swapchain_extent);
+    auto views = createImageViews(device.device, swapchain.format.format, swapchain.images);
+    auto framebuffers = createSwapchainFramebuffers(device.device, render_pass, views, swapchain.extent);
 
     auto command_pool = createCommandPool(device.device, gpu.queue_families.graphics.value());
     auto command_buffers = allocateCommandBuffers(device.device, command_pool, framebuffers.size());
-    recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain_extent, pipeline);
+    recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain.extent, pipeline);
     
-    mainLoop(vw, device.device, swapchain, device.queues, command_buffers);
+    mainLoop(vw, device.device, swapchain.swapchain, device.queues, command_buffers);
 
     vkFreeCommandBuffers(device.device, command_pool, command_buffers.size(), command_buffers.data());
     vkDestroyCommandPool(device.device, command_pool, nullptr);
@@ -1089,8 +1104,7 @@ void run() {
     vkDestroyPipeline(device.device, pipeline, nullptr);
     vkDestroyRenderPass(device.device, render_pass, nullptr);
 
-    vkDestroySwapchainKHR(device.device, swapchain, nullptr);
-
+    destroyVulkanSwapchain(device.device, swapchain);
     destroyVulkanDevice(device);
     destroyVulkanWindow(vi.instance, vw);
     destroyVulkanInstance(vi);
