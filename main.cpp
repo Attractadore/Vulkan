@@ -611,6 +611,12 @@ std::vector<VkImageView> createImageViews(VkDevice device, VkFormat format, cons
     return views;
 }
 
+void destroyImageViews(VkDevice dev, std::vector<VkImageView>& views) {
+    for (auto& view: views) {
+        vkDestroyImageView(dev, view, nullptr);
+    }
+}
+
 VkPipelineLayout createPipelineLayout(VkDevice device) {
     VkPipelineLayoutCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -873,6 +879,12 @@ std::vector<VkFramebuffer> createSwapchainFramebuffers(
     return framebuffers;
 }
 
+void destroyFramebuffers(VkDevice dev, std::vector<VkFramebuffer>& fbs) {
+    for (auto& fb: fbs) {
+        vkDestroyFramebuffer(dev, fb, nullptr);
+    }
+}
+
 VkCommandPool createCommandPool(VkDevice device, unsigned graphics_queue) {
     VkCommandPoolCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -1094,12 +1106,8 @@ void run() {
     vkFreeCommandBuffers(device.device, command_pool, command_buffers.size(), command_buffers.data());
     vkDestroyCommandPool(device.device, command_pool, nullptr);
 
-    for (auto& framebuffer: framebuffers) {
-        vkDestroyFramebuffer(device.device, framebuffer, nullptr);
-    }
-    for (auto& view: views) {
-        vkDestroyImageView(device.device, view, nullptr);
-    }
+    destroyFramebuffers(device.device, framebuffers);
+    destroyImageViews(device.device, views);
 
     vkDestroyPipeline(device.device, pipeline, nullptr);
     vkDestroyRenderPass(device.device, render_pass, nullptr);
