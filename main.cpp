@@ -228,9 +228,9 @@ VulkanWindow createVulkanWindow(VkInstance instance, unsigned width, unsigned he
     return vw;
 }
 
-bool shouldClose(VulkanWindow& vw) {
+bool shouldClose(GLFWwindow* window) {
     glfwPollEvents();
-    return glfwWindowShouldClose(vw.window);
+    return glfwWindowShouldClose(window);
 }
 
 void destroyVulkanWindow(VkInstance instance, VulkanWindow& vw) {
@@ -1039,7 +1039,7 @@ void mainLoop(
     std::vector<VkFence> image_fences{num_swapchain_images, VK_NULL_HANDLE};
 
     unsigned frame = 0;
-    while (!shouldClose(vw)) {
+    while (!shouldClose(vw.window)) {
         constexpr auto uint64_t_max = std::numeric_limits<uint64_t>::max();
 
         auto& acquire_semaphore = acquire_semaphores[frame];
