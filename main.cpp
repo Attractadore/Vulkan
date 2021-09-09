@@ -1021,16 +1021,16 @@ void submitPresent(VkQueue queue, VkSwapchainKHR swapchain, unsigned image, VkSe
 }
 
 void mainLoop(
-    VulkanWindow vw, VkDevice device,
-    VkSwapchainKHR swapchain, const Queues& queues,
+    GLFWwindow* window, VulkanDevice vd,
+    VkSwapchainKHR swapchain,
     const std::vector<VkCommandBuffer>& command_buffers)
 {
     auto num_swapchain_images = command_buffers.size();
-    auto acquire_semaphores = createSemaphores(device, num_swapchain_images);
-    auto render_semaphores = createSemaphores(device, num_swapchain_images);
+    auto acquire_semaphores = createSemaphores(vd.device, num_swapchain_images);
+    auto render_semaphores = createSemaphores(vd.device, num_swapchain_images);
     // Fences are used so that no more frames are being rendered at the same
     // time than there are swapchain images.
-    auto frame_fences = createFences(device, num_swapchain_images);
+    auto frame_fences = createFences(vd.device, num_swapchain_images);
     // The swapchain might return an image whose index differs from the current
     // frame's. In this case waiting on the current frame's fence will not be
     // sufficient, as the image might still be accessed by another frame's commands.
@@ -1039,7 +1039,7 @@ void mainLoop(
     std::vector<VkFence> image_fences{num_swapchain_images, VK_NULL_HANDLE};
 
     unsigned frame = 0;
-    while (!shouldClose(vw.window)) {
+    while (!shouldClose(window)) {
         constexpr auto uint64_t_max = std::numeric_limits<uint64_t>::max();
 
         auto& acquire_semaphore = acquire_semaphores[frame];
@@ -1047,29 +1047,29 @@ void mainLoop(
         auto& frame_fence = frame_fences[frame];
 
         unsigned image = 0;
-        vkAcquireNextImageKHR(device, swapchain, uint64_t_max, acquire_semaphore, VK_NULL_HANDLE, &image);
+        vkAcquireNextImageKHR(vd.device, swapchain, uint64_t_max, acquire_semaphore, VK_NULL_HANDLE, &image);
 
         auto& image_fence = image_fences[image];
         auto& command_buffer = command_buffers[image];
 
         if (image_fence != VK_NULL_HANDLE) {
-            vkWaitForFences(device, 1, &image_fence, true, uint64_t_max);
+            vkWaitForFences(vd.device, 1, &image_fence, true, uint64_t_max);
         }
         image_fence = frame_fence;
-        vkWaitForFences(device, 1, &frame_fence, true, uint64_t_max);
-        vkResetFences(device, 1, &frame_fence);
+        vkWaitForFences(vd.device, 1, &frame_fence, true, uint64_t_max);
+        vkResetFences(vd.device, 1, &frame_fence);
 
-        submitDraw(queues.graphics, command_buffer, acquire_semaphore, render_semaphore, frame_fence);
-        submitPresent(queues.present, swapchain, image, render_semaphore);
-        glfwSwapBuffers(vw.window);
+        submitDraw(vd.queues.graphics, command_buffer, acquire_semaphore, render_semaphore, frame_fence);
+        submitPresent(vd.queues.present, swapchain, image, render_semaphore);
+        glfwSwapBuffers(window);
 
         frame = (frame + 1) % num_swapchain_images;
     }
-    vkDeviceWaitIdle(device);
+    vkDeviceWaitIdle(vd.device);
 
-    destroyFences(device, frame_fences);
-    destroySemaphores(device, render_semaphores);
-    destroySemaphores(device, acquire_semaphores);
+    destroyFences(vd.device, frame_fences);
+    destroySemaphores(vd.device, render_semaphores);
+    destroySemaphores(vd.device, acquire_semaphores);
 }
 
 void run() {
@@ -1089,7 +1089,7 @@ void run() {
     auto command_buffers = allocateCommandBuffers(device.device, command_pool, framebuffers.size());
     recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain.extent, pipeline);
     
-    mainLoop(vw, device.device, swapchain.swapchain, device.queues, command_buffers);
+    mainLoop(vw.window, device, swapchain.swapchain, command_buffers);
 
     vkFreeCommandBuffers(device.device, command_pool, command_buffers.size(), command_buffers.data());
     vkDestroyCommandPool(device.device, command_pool, nullptr);
