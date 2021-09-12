@@ -116,6 +116,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugErrorCallback(
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
     void* p)
 {
+    (void)type;
+    (void)p;
     if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         fprintf(getErrorLog(), "VULKAN ERROR: %s \n", callback_data->pMessage);
     }
@@ -128,6 +130,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugInfoCallback(
     const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
     void* p)
 {
+    (void)severity;
+    (void)type;
+    (void)p;
     fprintf(getErrorLog(), "VULKAN INFO: %s \n", callback_data->pMessage);
     return VK_FALSE;
 }
