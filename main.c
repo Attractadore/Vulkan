@@ -19,11 +19,38 @@
 #define DEBUG (true)
 #endif
 
+#define CLEAN_LABEL(v) clean_ ## v
+
 #define STRING(v) #v
 
 #define ARRAY_SIZE(arr) (sizeof((arr)) / sizeof(*(arr)))
 
-#define CHECK_RETURN(res) if ((res) != VK_SUCCESS) { return res; }
+void memswap(void* restrict a, void* restrict b, size_t sz) {
+    if (a == b) {
+        return;
+    }
+    unsigned char* ca = a;
+    unsigned char* cb = b;
+    for (size_t i = 0; i < sz; i++) {
+        unsigned char t = ca[i];
+        ca[i] = cb[i];
+        cb[i] = t;
+    }
+}
+
+unsigned min(unsigned a, unsigned b) {
+    return (a < b) ? a : b;
+}
+
+unsigned max(unsigned a, unsigned b) {
+    return (a > b) ? a : b;
+}
+
+unsigned clamp(unsigned x, unsigned a, unsigned b) {
+    x = min(x, a);
+    x = max(x, b);
+    return x;
+}
 
 FILE* getLog() {
     return stdout;
@@ -33,25 +60,10 @@ FILE* getErrorLog() {
     return stderr;
 }
 
-const char* vulkanErrorString(VkResult res) {
-    switch (res) {
-        case VK_ERROR_EXTENSION_NOT_PRESENT:
-            return "extension not present";
-        default: {
-            fprintf(getErrorLog(), "FIXME: Unknown VkResult %d\n", res);
-            enum {buffer_size = 32};
-            static char buffer[buffer_size];
-            snprintf(buffer, buffer_size, "%d", res);
-            return buffer;
-        }
-    }
-}
-
 typedef enum {
     FR_SUCCESS = 0,
     FR_OPEN_FAILED,
     FR_SIZE_FAILED,
-    FR_MALLOC_FAILED,
     FR_READ_FAILED,
 } FResult;
 
@@ -73,9 +85,6 @@ FResult loadBinaryFileFP(FILE* fp, char** buffer_ptr, size_t* size_ptr) {
     }
 
     char* buffer = calloc(size, sizeof(char));
-    if (!buffer) {
-        return FR_MALLOC_FAILED;
-    }
 
     size_t num_read = fread(buffer, 1, size, fp);
     if (num_read != size or ferror(fp)) {
@@ -213,16 +222,95 @@ const char** getInstanceExtensions(unsigned* num_extensions_ptr) {
     return extensions;
 }
 
-VkResult createVulkanInstance(VulkanInstance* vi) {
-    unsigned num_layers = 0;
-    const char** layers = getInstanceLayers(&num_layers);
-    unsigned num_extensions = 0;
-    const char** extensions = getInstanceExtensions(&num_extensions);
-    for (unsigned i = 0; i < num_layers; i++) {
-        fprintf(getLog(), "Request layer %s\n", layers[i]);
+bool checkInstanceLayerSupported(
+    VkLayerProperties* supported, unsigned num_supported,
+    const char* layer 
+) {
+    for (unsigned i = 0; i < num_supported; i++) {
+        if (strcmp(supported[i].layerName, layer) == 0) {
+            return true;
+        }
     }
+    return false;
+}
+
+bool checkInstanceLayersSupported(
+    VkLayerProperties* supported, unsigned num_supported,
+    const char** required, unsigned num_required
+) {
+    bool all = true;
+    for (unsigned i = 0; i < num_required; i++) {
+        if (!checkInstanceLayerSupported(supported, num_supported, required[i])) {
+            fprintf(getErrorLog(), "Layer %s is not supported\n", required[i]);
+            all = false;
+        }
+    }
+    return all;
+}
+
+bool instanceLayersSupported(const char** required, unsigned num_required) {
+    unsigned num_supported;
+    vkEnumerateInstanceLayerProperties(&num_supported, NULL);
+    VkLayerProperties* supported = calloc(num_supported, sizeof(*supported));
+    vkEnumerateInstanceLayerProperties(&num_supported, supported);
+    bool all = checkInstanceLayersSupported(supported, num_supported, required, num_required);
+    free(supported);
+    return all;
+}
+
+bool checkInstanceExtensionSupported(
+    VkExtensionProperties* supported, unsigned num_supported,
+    const char* layer 
+) {
+    for (unsigned i = 0; i < num_supported; i++) {
+        if (strcmp(supported[i].extensionName, layer) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool checkInstanceExtensionsSupported(
+    VkExtensionProperties* supported, unsigned num_supported,
+    const char** required, unsigned num_required
+) {
+    bool all = true;
+    for (unsigned i = 0; i < num_required; i++) {
+        if (!checkInstanceExtensionSupported(supported, num_supported, required[i])) {
+            fprintf(getErrorLog(), "Extension %s is not supported\n", required[i]);
+            all =  false;
+        }
+    }
+    return all;
+}
+
+bool instanceExtensionsSupported(const char** required, unsigned num_required) {
+    unsigned num_supported;
+    vkEnumerateInstanceExtensionProperties(NULL, &num_supported, NULL);
+    VkExtensionProperties* supported = calloc(num_supported, sizeof(*supported));
+    vkEnumerateInstanceExtensionProperties(NULL, &num_supported, supported);
+    bool all = checkInstanceExtensionsSupported(supported, num_supported, required, num_required);
+    free(supported);
+    return all;
+}
+
+VkResult createVulkanInstance(VulkanInstance* vi) {
+    unsigned num_layers;
+    const char** layers = getInstanceLayers(&num_layers);
+    for (unsigned i = 0; i < num_layers; i++) {
+        fprintf(getLog(), "Require layer %s\n", layers[i]);
+    }
+    if (!instanceLayersSupported(layers, num_layers)) {
+        return VK_ERROR_LAYER_NOT_PRESENT;
+    }
+
+    unsigned num_extensions;
+    const char** extensions = getInstanceExtensions(&num_extensions);
     for (unsigned i = 0; i < num_extensions; i++) {
         fprintf(getLog(), "Require instance extension %s\n", extensions[i]);
+    }
+    if (!instanceExtensionsSupported(extensions, num_extensions)) {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
 
     VkDebugUtilsMessengerCreateInfoEXT messenger_create_info = {
@@ -250,11 +338,9 @@ VkResult createVulkanInstance(VulkanInstance* vi) {
         .ppEnabledExtensionNames = extensions,
     };
 
-    VkResult res = vkCreateInstance(&instance_create_info, NULL, &vi->instance);
-    CHECK_RETURN(res);
+    vkCreateInstance(&instance_create_info, NULL, &vi->instance);
 #if DEBUG
-    res = createDebugMessenger(vi->instance, &messenger_create_info, NULL, &vi->messenger);
-    CHECK_RETURN(res);
+    createDebugMessenger(vi->instance, &messenger_create_info, NULL, &vi->messenger);
 #endif
 
     return VK_SUCCESS;
@@ -272,14 +358,13 @@ typedef struct {
     VkSurfaceKHR surface;
 } VulkanWindow;
 
-VkResult createVulkanWindow(VkInstance instance, unsigned width, unsigned height, VulkanWindow* vw) {
+VulkanWindow createVulkanWindow(VkInstance instance, unsigned width, unsigned height) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, false);
-    vw->window = glfwCreateWindow(width, height, "Vulkan Tutorial", NULL, NULL);
-    if (!vw->window) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    VkResult res = glfwCreateWindowSurface(instance, vw->window, NULL, &vw->surface);
-    CHECK_RETURN(res);
-    return res;
+    VulkanWindow vw;
+    vw.window = glfwCreateWindow(width, height, "Vulkan Tutorial", NULL, NULL);
+    glfwCreateWindowSurface(instance, vw.window, NULL, &vw.surface);
+    return vw;
 }
 
 bool shouldClose(GLFWwindow* window) {
@@ -335,19 +420,19 @@ bool getGPUPresentQueueFamily(
     return false;
 }
 
-VkResult getGPUQueueFamilies(VkPhysicalDevice gpu, VkSurfaceKHR surface, QueueFamilies* queue_families) {
+QueueFamilies getGPUQueueFamilies(VkPhysicalDevice gpu, VkSurfaceKHR surface) {
     unsigned num_queues = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &num_queues, NULL);
     VkQueueFamilyProperties* queues = calloc(num_queues, sizeof(*queues));
-    if (!queues) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &num_queues, queues);
 
-    queue_families->has_graphics = getGPUGraphicsQueueFamily(queues, num_queues, &queue_families->graphics);
-    queue_families->has_present = getGPUPresentQueueFamily(gpu, surface, num_queues, &queue_families->present);
+    QueueFamilies queue_families;
+    queue_families.has_graphics = getGPUGraphicsQueueFamily(queues, num_queues, &queue_families.graphics);
+    queue_families.has_present = getGPUPresentQueueFamily(gpu, surface, num_queues, &queue_families.present);
 
     free(queues);
 
-    return VK_SUCCESS;
+    return queue_families;
 }
 
 typedef struct {
@@ -363,37 +448,27 @@ void freeSurfaceInfo(SurfaceInfo* info) {
     free(info->present_modes);
 }
 
-VkResult getGPUSurfaceInfoImpl(
-    VkPhysicalDevice gpu, VkSurfaceKHR surface, SurfaceInfo* info
+SurfaceInfo getGPUSurfaceInfo(
+    VkPhysicalDevice gpu, VkSurfaceKHR surface
 ) {
-    VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &info->capabilities);
-    CHECK_RETURN(res);
+    SurfaceInfo info;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &info.capabilities);
 
-    res = vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &info->num_formats, NULL);
-    CHECK_RETURN(res);
-    info->formats = calloc(info->num_formats, sizeof(*info->formats));
-    if (!info->formats) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    res = vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &info->num_formats, info->formats);
-    CHECK_RETURN(res);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &info.num_formats, NULL);
+    info.formats = calloc(info.num_formats, sizeof(*info.formats));
+    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &info.num_formats, info.formats);
 
-    res = vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &info->num_present_modes, NULL);
-    CHECK_RETURN(res);
-    info->present_modes = calloc(info->num_present_modes, sizeof(*info->present_modes));
-    if (!info->present_modes) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    res = vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &info->num_present_modes, info->present_modes);
-    CHECK_RETURN(res);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &info.num_present_modes, NULL);
+    info.present_modes = calloc(info.num_present_modes, sizeof(*info.present_modes));
+    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &info.num_present_modes, info.present_modes);
 
-    return VK_SUCCESS;
+    return info;
 }
 
-VkResult getGPUSurfaceInfo(VkPhysicalDevice gpu, VkSurfaceKHR surface, SurfaceInfo* info) {
-    info->formats = NULL;
-    info->present_modes = NULL;
-    VkResult res = getGPUSurfaceInfoImpl(gpu, surface, info);
-    if (res != VK_SUCCESS) {
-        freeSurfaceInfo(info);
-    }
-    return res;
+const char* gpuName(VkPhysicalDevice gpu) {
+    static VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(gpu, &props);
+    return props.deviceName;
 }
 
 bool extensionSupported(
@@ -408,35 +483,31 @@ bool extensionSupported(
     return false;
 }
 
-bool extensionsSupported(
+bool checkGPUExtensionsSupported(
+    VkPhysicalDevice gpu,
     VkExtensionProperties* supported, unsigned num_supported,
     const char** required, unsigned num_required
 ) {
+    bool all = true;
     for (unsigned i = 0; i < num_required; i++) {
         if (!extensionSupported(supported, num_supported, required[i])) {
-            return false;
+            fprintf(getErrorLog(), "%s does not have support for extension %s\n", gpuName(gpu), required[i]);
+            all = false;
         }
     }
-    return true;
+    return all;
 }
 
-bool gpuExtensionsSupported(VkPhysicalDevice gpu) {
-    unsigned num_required = 0;
-    const char** required = getGPUExtensions(&num_required);
-
+bool gpuExtensionsSupported(
+    VkPhysicalDevice gpu,
+    const char** required, unsigned num_required
+) {
     unsigned num_supported = 0;
-    if (vkEnumerateDeviceExtensionProperties(gpu, NULL, &num_supported, NULL) != VK_SUCCESS) {
-        return false;
-    }
+    vkEnumerateDeviceExtensionProperties(gpu, NULL, &num_supported, NULL);
     VkExtensionProperties* supported = calloc(num_supported, sizeof(*supported));
-    if (!supported) { return false; }
-    if (vkEnumerateDeviceExtensionProperties(gpu, NULL, &num_supported, supported) != VK_SUCCESS) {
-        return false;
-    }
-
-    bool all = extensionsSupported(supported, num_supported, required, num_required);
+    vkEnumerateDeviceExtensionProperties(gpu, NULL, &num_supported, supported);
+    bool all = checkGPUExtensionsSupported(gpu, supported, num_supported, required, num_required);
     free(supported);
-
     return all;
 }
 
@@ -454,58 +525,56 @@ void freeVulkanGPU(VulkanGPU* gpu) {
     freeSurfaceInfo(&gpu->surface_info);
 }
 
-VkResult getInstanceGPUsImpl(
-    VkInstance instance, VkSurfaceKHR surface,
-    VkPhysicalDevice** gpus_ptr,
-    VulkanGPU** vgpus_ptr, unsigned* num_vgpus_ptr
-) {
-    unsigned num_gpus = 0;
-    VkResult res = vkEnumeratePhysicalDevices(instance, &num_gpus, NULL);
-    CHECK_RETURN(res);
-    VkPhysicalDevice* gpus = calloc(num_gpus, sizeof(*gpus));
-    if (!gpus) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    *gpus_ptr = gpus;
-    res = vkEnumeratePhysicalDevices(instance, &num_gpus, gpus);
-    CHECK_RETURN(res);
-
-    VulkanGPU* vgpus = calloc(num_gpus, sizeof(*vgpus));
-    if (!vgpus) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    *vgpus_ptr = vgpus;
-    *num_vgpus_ptr = num_gpus;
-
-    for (unsigned i = 0; i < num_gpus; i++) {
-        vgpus[i].gpu = gpus[i];
-        res = getGPUQueueFamilies(vgpus[i].gpu, surface, &vgpus[i].queue_families);
-        CHECK_RETURN(res);
-        res = getGPUSurfaceInfo(vgpus[i].gpu, surface, &vgpus[i].surface_info);
-        CHECK_RETURN(res);
+bool checkGPU(VulkanGPU* gpu, const char** extensions, unsigned num_extensions) {
+    bool good = true;
+    if (!gpuExtensionsSupported(gpu->gpu, extensions, num_extensions)) {
+        good = false;
     }
-
-    return VK_SUCCESS;
+    if (!gpuSurfaceSupported(&gpu->surface_info)) {
+        fprintf(getErrorLog(), "%s does not have support for the required surface operations\n", gpuName(gpu->gpu));
+        good = false;
+    }
+    if (!gpu->queue_families.has_graphics) {
+        fprintf(getErrorLog(), "%s does not have a graphics queue\n", gpuName(gpu->gpu));
+        good = false;
+    }
+    if (!gpu->queue_families.has_present) {
+        fprintf(getErrorLog(), "%s does not have a present queue\n", gpuName(gpu->gpu));
+        good = false;
+    }
+    return good;
 }
 
-VkResult getInstanceGPUs(VkInstance instance, VkSurfaceKHR surface, VulkanGPU** vgpus_ptr, unsigned* num_vgpus_ptr) {
-    VkPhysicalDevice* gpus = NULL;
-    *vgpus_ptr = NULL;
-    VkResult res = getInstanceGPUsImpl(instance, surface, &gpus, vgpus_ptr, num_vgpus_ptr);
-    free(gpus);
-    if (res != VK_SUCCESS) {
-        free(*vgpus_ptr);
-        return res;
+VulkanGPU* getInstanceGPUs(
+    VkInstance instance, VkSurfaceKHR surface,
+    unsigned* num_vgpus_ptr
+) {
+    unsigned num_gpus = 0;
+    vkEnumeratePhysicalDevices(instance, &num_gpus, NULL);
+    VkPhysicalDevice* gpus = calloc(num_gpus, sizeof(*gpus));
+    vkEnumeratePhysicalDevices(instance, &num_gpus, gpus);
+
+    VulkanGPU* vgpus = calloc(num_gpus, sizeof(*vgpus));
+
+    for (unsigned i = 0; i < num_gpus; i++) {
+        vgpus[i] = (VulkanGPU) {
+            .gpu = gpus[i],
+            .queue_families = getGPUQueueFamilies(gpus[i], surface),
+            .surface_info = getGPUSurfaceInfo(gpus[i], surface),
+        };
     }
-    return VK_SUCCESS;
+
+    free(gpus);
+
+    *num_vgpus_ptr = num_gpus;
+
+    return vgpus;
 }
 
 unsigned gpuScore(VulkanGPU gpu) {
-    if (gpuExtensionsSupported(gpu.gpu) and
-        gpuSurfaceSupported(&gpu.surface_info) and
-        gpu.queue_families.has_graphics and
-        gpu.queue_families.has_present) {
-        VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(gpu.gpu, &props);
-        return (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) ? 2 : 1;
-    }
-    return 0;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(gpu.gpu, &props);
+    return (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) ? 2 : 1;
 }
 
 VulkanGPU* gpuWithHighestScore(VulkanGPU* gpus, unsigned num_gpus) {
@@ -518,35 +587,48 @@ VulkanGPU* gpuWithHighestScore(VulkanGPU* gpus, unsigned num_gpus) {
     return &gpus[max_i];
 }
 
-const char* gpuName(VkPhysicalDevice gpu) {
-    static VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(gpu, &props);
-    return props.deviceName;
-}
-
 VkResult selectVulkanGPU(VkInstance instance, VkSurfaceKHR surface, VulkanGPU* gpu) {
-    VulkanGPU* gpus = NULL;
     unsigned num_gpus = 0;
-    VkResult res = getInstanceGPUs(instance, surface, &gpus, &num_gpus);
-    CHECK_RETURN(res);
-
-    VulkanGPU* max_gpu_ptr = gpuWithHighestScore(gpus, num_gpus);
-    *gpu = *max_gpu_ptr;
+    VulkanGPU* gpus = getInstanceGPUs(instance, surface, &num_gpus);
 
     fprintf(getLog(), "Available GPUs:\n");
     for (unsigned i = 0; i < num_gpus; i++) {
         fprintf(getLog(), "%s\n", gpuName(gpus[i].gpu));
     }
-    fprintf(getLog(), "Select %s\n", gpuName(gpu->gpu));
+
+    unsigned num_extensions;
+    const char** extensions = getGPUExtensions(&num_extensions);
+    for (unsigned i = 0; i < num_extensions; i++) {
+        fprintf(getLog(), "Require device extension %s\n", extensions[i]);
+    }
+
+    unsigned num_good_gpus = 0;
+    for (unsigned i = 0; i < num_gpus; i++) {
+        if (checkGPU(&gpus[i], extensions, num_extensions)) {
+            memswap(&gpus[num_good_gpus++], &gpus[i], sizeof(VulkanGPU));
+        }
+    }
+
+    VulkanGPU* max_gpu = NULL;
+    VkResult res = VK_SUCCESS;
+    if (!num_good_gpus) {
+        res = VK_ERROR_FEATURE_NOT_PRESENT;
+        fprintf(getErrorLog(), "No suitable GPUs found\n");
+    }
+    else {
+        max_gpu = gpuWithHighestScore(gpus, num_good_gpus);
+        *gpu = *max_gpu;
+        fprintf(getLog(), "Select %s\n", gpuName(gpu->gpu));
+    }
 
     for (unsigned i = 0; i < num_gpus; i++) {
-        if (&gpus[i] != max_gpu_ptr) {
+        if (&gpus[i] != max_gpu) {
             freeVulkanGPU(&gpus[i]);
         }
     }
     free(gpus);
 
-    return VK_SUCCESS;
+    return res;
 }
 
 typedef struct {
@@ -563,9 +645,7 @@ unsigned* getQueueFamilyIndices(
     const QueueFamilies* queue_families,
     unsigned* num_queue_family_indices_ptr
 ) {
-    if (!queue_families->has_graphics or !queue_families->has_present) {
-        return NULL;
-    }
+    assert(queue_families->has_graphics and queue_families->has_present);
 
     static unsigned queue_family_indices[2];
     queue_family_indices[0] = queue_families->graphics;
@@ -579,13 +659,11 @@ unsigned* getQueueFamilyIndices(
     return queue_family_indices;
 }
 
-VkResult createVulkanDevice(VulkanGPU* gpu, VulkanDevice* vd) {
+VulkanDevice createVulkanDevice(VulkanGPU* gpu) {
     unsigned num_queue_family_indices = 0;
     unsigned* queue_family_indices = getQueueFamilyIndices(&gpu->queue_families, &num_queue_family_indices);
-    if (!queue_family_indices) { return VK_ERROR_FEATURE_NOT_PRESENT; }
 
     VkDeviceQueueCreateInfo* queue_create_infos = calloc(num_queue_family_indices, sizeof(*queue_create_infos));
-    if (!queue_create_infos) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
     float priority = 1.0f;
     for (unsigned i = 0; i < num_queue_family_indices; i++) {
         queue_create_infos[i] = (VkDeviceQueueCreateInfo) {
@@ -600,9 +678,6 @@ VkResult createVulkanDevice(VulkanGPU* gpu, VulkanDevice* vd) {
 
     unsigned num_extensions = 0;
     const char** extensions = getGPUExtensions(&num_extensions);
-    for (unsigned i = 0; i < num_extensions; i++) {
-        fprintf(getLog(), "Require device extension %s\n", extensions[i]);
-    }
 
     VkDeviceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -616,14 +691,15 @@ VkResult createVulkanDevice(VulkanGPU* gpu, VulkanDevice* vd) {
         .ppEnabledExtensionNames = extensions,
         .pEnabledFeatures = NULL,
     };
-    VkResult res = vkCreateDevice(gpu->gpu, &create_info, NULL, &vd->device);
+
+    VulkanDevice vd;
+    vkCreateDevice(gpu->gpu, &create_info, NULL, &vd.device);
+    vkGetDeviceQueue(vd.device, gpu->queue_families.graphics, 0, &vd.queues.graphics);
+    vkGetDeviceQueue(vd.device, gpu->queue_families.present, 0, &vd.queues.present);
+
     free(queue_create_infos);
-    CHECK_RETURN(res);
 
-    vkGetDeviceQueue(vd->device, gpu->queue_families.graphics, 0, &vd->queues.graphics);
-    vkGetDeviceQueue(vd->device, gpu->queue_families.present, 0, &vd->queues.present);
-
-    return VK_SUCCESS;
+    return vd;
 }
 
 void destroyVulkanDevice(VulkanDevice* vd) {
@@ -647,20 +723,6 @@ VkPresentModeKHR selectPresentMode(const VkPresentModeKHR* present_modes, unsign
         }
     }
     return VK_PRESENT_MODE_FIFO_KHR;
-}
-
-unsigned min(unsigned a, unsigned b) {
-    return (a < b) ? a : b;
-}
-
-unsigned max(unsigned a, unsigned b) {
-    return (a > b) ? a : b;
-}
-
-unsigned clamp(unsigned x, unsigned a, unsigned b) {
-    x = min(x, a);
-    x = max(x, b);
-    return x;
 }
 
 VkExtent2D selectSwapchainExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR* capabilities) {
@@ -696,24 +758,15 @@ unsigned selectSwapchainImageCount(const VkSurfaceCapabilitiesKHR* capabilities)
     return image_count;
 }
 
-VkResult getSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, VkImage** images_ptr, unsigned* num_images_ptr) {
-    VkResult res = VK_SUCCESS;
-
+VkImage* getSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, unsigned* num_images_ptr) {
     unsigned num_images = 0;
-    res = vkGetSwapchainImagesKHR(device, swapchain, &num_images, NULL);
-    CHECK_RETURN(res);
+    vkGetSwapchainImagesKHR(device, swapchain, &num_images, NULL);
     VkImage* images = calloc(num_images, sizeof(*images));
-    if (!images) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-    res = vkGetSwapchainImagesKHR(device, swapchain, &num_images, images);
-    if (res != VK_SUCCESS) {
-        free(images);
-        return res;
-    }
+    vkGetSwapchainImagesKHR(device, swapchain, &num_images, images);
 
-    *images_ptr = images;
     *num_images_ptr = num_images;
 
-    return VK_SUCCESS;
+    return images;
 }
 
 typedef struct {
@@ -725,15 +778,15 @@ typedef struct {
     unsigned num_images;
 } VulkanSwapchain;
 
-VkResult createVulkanSwapchain(
+VulkanSwapchain createVulkanSwapchain(
     VkDevice device, const VulkanWindow* vw,
-    const VulkanGPU* gpu, VulkanSwapchain* swapchain
+    const VulkanGPU* gpu
 ) {
-    swapchain->format =
-        selectSurfaceFormat(gpu->surface_info.formats, gpu->surface_info.num_formats);
-    swapchain->present_mode =
-        selectPresentMode(gpu->surface_info.present_modes, gpu->surface_info.num_present_modes);
-    swapchain->extent = selectSwapchainExtent(vw->window, &gpu->surface_info.capabilities);
+    VulkanSwapchain swapchain = {
+        .format = selectSurfaceFormat(gpu->surface_info.formats, gpu->surface_info.num_formats),
+        .present_mode = selectPresentMode(gpu->surface_info.present_modes, gpu->surface_info.num_present_modes),
+        .extent = selectSwapchainExtent(vw->window, &gpu->surface_info.capabilities),
+    };
     unsigned image_count = selectSwapchainImageCount(&gpu->surface_info.capabilities);
 
     bool exclusive =
@@ -748,9 +801,9 @@ VkResult createVulkanSwapchain(
         .flags = 0,
         .surface = vw->surface,
         .minImageCount = image_count,
-        .imageFormat = swapchain->format.format,
-        .imageColorSpace = swapchain->format.colorSpace,
-        .imageExtent = swapchain->extent,
+        .imageFormat = swapchain.format.format,
+        .imageColorSpace = swapchain.format.colorSpace,
+        .imageExtent = swapchain.extent,
         .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .imageSharingMode =
@@ -760,62 +813,20 @@ VkResult createVulkanSwapchain(
         .pQueueFamilyIndices = exclusive ? NULL : queues,
         .preTransform = gpu->surface_info.capabilities.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = swapchain->present_mode,
+        .presentMode = swapchain.present_mode,
         .clipped = VK_TRUE,
         .oldSwapchain = VK_NULL_HANDLE,
     };
-    VkResult res = VK_SUCCESS;
-    res = vkCreateSwapchainKHR(device, &create_info, NULL, &swapchain->swapchain);
-    CHECK_RETURN(res);
+    vkCreateSwapchainKHR(device, &create_info, NULL, &swapchain.swapchain);
 
-    res = getSwapchainImages(device, swapchain->swapchain, &swapchain->images, &swapchain->num_images);
-    if (res != VK_SUCCESS) {
-        vkDestroySwapchainKHR(device, swapchain->swapchain, NULL);
-        return res;
-    }
+    swapchain.images = getSwapchainImages(device, swapchain.swapchain, &swapchain.num_images);
 
-    return res;
+    return swapchain;
 }
 
 void destroyVulkanSwapchain(VkDevice device, VulkanSwapchain* vs) {
     free(vs->images);
     vkDestroySwapchainKHR(device, vs->swapchain, NULL);
-}
-
-#if 0
-std::vector<VkImageView> createImageViews(VkDevice device, VkFormat format, const std::vector<VkImage> images) {
-    std::vector<VkImageView> views{images.size()};
-    for (unsigned i = 0; i < images.size(); i++) {
-        VkImageViewCreateInfo create_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .pNext = NULL,
-            .flags = 0,
-            .image = images[i],
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = format,
-            .components = {
-                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        };
-        vkCreateImageView(device, &create_info, NULL, &views[i]);
-    }
-    return views;
-}
-
-void destroyImageViews(VkDevice dev, std::vector<VkImageView>& views) {
-    for (auto& view: views) {
-        vkDestroyImageView(dev, view, NULL);
-    }
 }
 
 VkPipelineLayout createPipelineLayout(VkDevice device) {
@@ -892,13 +903,13 @@ VkRenderPass createRenderPass(VkDevice device, VkFormat format) {
     return render_pass;
 }
 
-VkShaderModule createShaderModule(VkDevice device, const std::vector<std::byte>& binary) {
+VkShaderModule createShaderModule(VkDevice device, const char* binary, size_t binary_size) {
     VkShaderModuleCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .pNext = NULL,
         .flags = 0,
-        .codeSize = binary.size(),
-        .pCode = reinterpret_cast<decltype(create_info.pCode)>(binary.data()),
+        .codeSize = binary_size,
+        .pCode = (const uint32_t*) binary,
     };
     VkShaderModule shader_module;
     vkCreateShaderModule(device, &create_info, NULL, &shader_module);
@@ -908,7 +919,7 @@ VkShaderModule createShaderModule(VkDevice device, const std::vector<std::byte>&
 VkPipelineShaderStageCreateInfo getPipelineShaderStageCreateInfo(
     VkShaderStageFlagBits stage, VkShaderModule shader_module)
 {
-    return {
+    return (VkPipelineShaderStageCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .pNext = NULL,
         .flags = 0,
@@ -923,25 +934,27 @@ VkPipeline createPipeline(
     VkDevice device, VkExtent2D swapchain_extent,
     VkRenderPass render_pass)
 {
-    constexpr auto vert_name = "shader.vert.spv";
-    constexpr auto frag_name = "shader.frag.spv";
-    auto vertBinary = util::loadBinaryFile(vert_name);
-    if (vertBinary.empty()) {
-        util::error_log << "Failed to load binary from " << vert_name << "\n";
+    const char* vert_name = "shader.vert.spv";
+    const char* frag_name = "shader.frag.spv";
+    char* vert_binary;
+    size_t vert_binary_size;
+    if (loadBinaryFile(vert_name, &vert_binary, &vert_binary_size) != FR_SUCCESS) {
+        fprintf(getErrorLog(), "Failed to load binary from %s\n", vert_name);
         return VK_NULL_HANDLE;
     }
-    auto fragBinary = util::loadBinaryFile(frag_name);
-    if (fragBinary.empty()) {
-        util::error_log << "Failed to load binary from " << frag_name << "\n";
+    char* frag_binary;
+    size_t frag_binary_size;
+    if (loadBinaryFile(frag_name, &frag_binary, &frag_binary_size) != FR_SUCCESS) {
+        fprintf(getErrorLog(), "Failed to load binary from %s\n", vert_name);
         return VK_NULL_HANDLE;
     }
 
-    auto vertModule = createShaderModule(device, vertBinary);
-    auto fragModule = createShaderModule(device, fragBinary);
+    VkShaderModule vert_module = createShaderModule(device, vert_binary, vert_binary_size);
+    VkShaderModule frag_module = createShaderModule(device, frag_binary, frag_binary_size);
 
-    std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages = {
-        getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vertModule),
-        getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule),
+    VkPipelineShaderStageCreateInfo shader_stages[] = {
+        getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, vert_module),
+        getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, frag_module),
     };
 
     VkPipelineVertexInputStateCreateInfo vertex_input_state = {
@@ -965,8 +978,8 @@ VkPipeline createPipeline(
     VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
-        .width = float(swapchain_extent.width),
-        .height = float(swapchain_extent.height),
+        .width = swapchain_extent.width,
+        .height = swapchain_extent.height,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
@@ -1024,14 +1037,14 @@ VkPipeline createPipeline(
         .pAttachments = &color_blend_attachment,
     };
 
-    auto layout = createPipelineLayout(device);
+    VkPipelineLayout layout = createPipelineLayout(device);
 
     VkGraphicsPipelineCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = NULL,
         .flags = 0,
-        .stageCount = shader_stages.size(),
-        .pStages = shader_stages.data(),
+        .stageCount = ARRAY_SIZE(shader_stages),
+        .pStages = shader_stages,
         .pVertexInputState = &vertex_input_state,
         .pInputAssemblyState = &input_assembly_state,
         .pTessellationState = NULL,
@@ -1052,18 +1065,56 @@ VkPipeline createPipeline(
     vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create_info, NULL, &pipeline);
 
     vkDestroyPipelineLayout(device, layout, NULL);
-    vkDestroyShaderModule(device, vertModule, NULL);
-    vkDestroyShaderModule(device, fragModule, NULL);
+    vkDestroyShaderModule(device, vert_module, NULL);
+    vkDestroyShaderModule(device, frag_module, NULL);
+
+    free(vert_binary);
+    free(frag_binary);
 
     return pipeline;
-};
+}
 
-std::vector<VkFramebuffer> createSwapchainFramebuffers(
+VkImageView* createImageViews(VkDevice device, VkFormat format, const VkImage* images, unsigned num_images) {
+    VkImageView* views = calloc(num_images, sizeof(*views));
+    for (unsigned i = 0; i < num_images; i++) {
+        VkImageViewCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = NULL,
+            .flags = 0,
+            .image = images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+            .components = {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        vkCreateImageView(device, &create_info, NULL, &views[i]);
+    }
+    return views;
+}
+
+void destroyImageViews(VkDevice device, VkImageView* views, unsigned num_views) {
+    for (unsigned i = 0; i < num_views; i++) {
+        vkDestroyImageView(device, views[i], NULL);
+    }
+}
+
+VkFramebuffer* createSwapchainFramebuffers(
     VkDevice device, VkRenderPass render_pass,
-    const std::vector<VkImageView> views, VkExtent2D swapchain_extent)
+    const VkImageView* views, unsigned num_views, VkExtent2D swapchain_extent)
 {
-    std::vector<VkFramebuffer> framebuffers{views.size()};
-    for (unsigned i = 0; i < views.size(); i++) {
+    VkFramebuffer* framebuffers = calloc(num_views, sizeof(*framebuffers));
+    for (unsigned i = 0; i < num_views; i++) {
         VkFramebufferCreateInfo create_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext = NULL,
@@ -1080,9 +1131,9 @@ std::vector<VkFramebuffer> createSwapchainFramebuffers(
     return framebuffers;
 }
 
-void destroyFramebuffers(VkDevice dev, std::vector<VkFramebuffer>& fbs) {
-    for (auto& fb: fbs) {
-        vkDestroyFramebuffer(dev, fb, NULL);
+void destroyFramebuffers(VkDevice device, VkFramebuffer* fbs, unsigned num_fbs) {
+    for (unsigned i = 0; i < num_fbs; i++) {
+        vkDestroyFramebuffer(device, fbs[i], NULL);
     }
 }
 
@@ -1098,7 +1149,7 @@ VkCommandPool createCommandPool(VkDevice device, unsigned graphics_queue) {
     return command_pool;
 }
 
-std::vector<VkCommandBuffer> allocateCommandBuffers(
+VkCommandBuffer* allocateCommandBuffers(
     VkDevice device, VkCommandPool command_pool, unsigned num_command_buffers)
 {
     VkCommandBufferAllocateInfo create_info = {
@@ -1108,17 +1159,19 @@ std::vector<VkCommandBuffer> allocateCommandBuffers(
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = num_command_buffers,
     };
-    std::vector<VkCommandBuffer> command_buffers{num_command_buffers};
-    vkAllocateCommandBuffers(device, &create_info, command_buffers.data());
+    VkCommandBuffer* command_buffers = calloc(num_command_buffers, sizeof(*command_buffers));
+    vkAllocateCommandBuffers(device, &create_info, command_buffers);
     return command_buffers;
 }
 
 void recordCommandBuffers(
-    const std::vector<VkCommandBuffer>& command_buffers, VkRenderPass render_pass,
-    const std::vector<VkFramebuffer> framebuffers, VkExtent2D swapchain_extent,
-    VkPipeline pipeline)
-{
-    for (unsigned i = 0; i < command_buffers.size(); i++) {
+    VkCommandBuffer* command_buffers, unsigned num_command_buffers,
+    const VkFramebuffer* framebuffers, 
+    VkRenderPass render_pass,
+    VkPipeline pipeline,
+    VkExtent2D swapchain_extent
+) {
+    for (unsigned i = 0; i < num_command_buffers; i++) {
         VkCommandBufferBeginInfo begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .pNext = NULL,
@@ -1128,7 +1181,7 @@ void recordCommandBuffers(
         vkBeginCommandBuffer(command_buffers[i], &begin_info);
 
         VkClearValue clear_color = {
-            .color = {.float32{0.0f, 0.0f, 0.0f, 1.0f}}
+            .color = {.float32 = {0.0f, 0.0f, 0.0f, 1.0f}}
         };
         VkRenderPassBeginInfo render_pass_begin_info = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -1162,17 +1215,18 @@ VkSemaphore createSemaphore(VkDevice device) {
     return semaphore;
 }
 
-std::vector<VkSemaphore> createSemaphores(VkDevice device, unsigned num_semaphores) {
-    std::vector<VkSemaphore> semaphores{num_semaphores};
-    std::generate(semaphores.begin(), semaphores.end(), [&]() { return createSemaphore(device); });
+VkSemaphore* createSemaphores(VkDevice device, unsigned num_semaphores) {
+    VkSemaphore* semaphores = calloc(num_semaphores, sizeof(*semaphores));
+    for (unsigned i = 0; i < num_semaphores; i++) {
+        semaphores[i] = createSemaphore(device);
+    }
     return semaphores;
 }
 
-void destroySemaphores(VkDevice device, std::vector<VkSemaphore>& semaphores) {
-    for (auto& semaphore: semaphores) {
-        vkDestroySemaphore(device, semaphore, NULL);
+void destroySemaphores(VkDevice device, VkSemaphore* semaphores, unsigned num_semaphores) {
+    for (unsigned i = 0; i < num_semaphores; i++) {
+        vkDestroySemaphore(device, semaphores[i], NULL);
     }
-    semaphores.clear();
 }
 
 VkFence createFence(VkDevice device) {
@@ -1184,20 +1238,21 @@ VkFence createFence(VkDevice device) {
     VkFence fence;
     vkCreateFence(device, &create_info, NULL, &fence);
     return fence;
-};
-
-void destroyFences(VkDevice device, std::vector<VkFence>& fences) {
-    for (auto& fence: fences) {
-        vkDestroyFence(device, fence, NULL);
-    }
-    fences.clear();
 }
 
-std::vector<VkFence> createFences(VkDevice device, unsigned num_fences) {
-    std::vector<VkFence> fences{num_fences};
-    std::generate(fences.begin(), fences.end(), [&]() { return createFence(device); } );
+VkFence* createFences(VkDevice device, unsigned num_fences) {
+    VkFence* fences = calloc(num_fences, sizeof(*fences));
+    for (unsigned i = 0; i < num_fences; i++) {
+        fences[i] = createFence(device);
+    }
     return fences;
-};
+}
+
+void destroyFences(VkDevice device, VkFence* fences, unsigned num_fences) {
+    for (unsigned i = 0; i < num_fences; i++) {
+        vkDestroyFence(device, fences[i], NULL);
+    }
+}
 
 void submitDraw(
     VkQueue queue, VkCommandBuffer command_buffer,
@@ -1234,122 +1289,98 @@ void submitPresent(VkQueue queue, VkSwapchainKHR swapchain, unsigned image, VkSe
 }
 
 void mainLoop(
-    GLFWwindow* window, VulkanDevice vd,
+    GLFWwindow* window, VulkanDevice* vd,
     VkSwapchainKHR swapchain,
-    const std::vector<VkCommandBuffer>& command_buffers)
+    VkCommandBuffer* command_buffers, unsigned num_command_buffers)
 {
-    auto num_swapchain_images = command_buffers.size();
-    auto acquire_semaphores = createSemaphores(vd.device, num_swapchain_images);
-    auto render_semaphores = createSemaphores(vd.device, num_swapchain_images);
+    VkSemaphore* acquire_semaphores = createSemaphores(vd->device, num_command_buffers);
+    VkSemaphore* render_semaphores = createSemaphores(vd->device, num_command_buffers);
     // Fences are used so that no more frames are being rendered at the same
     // time than there are swapchain images.
-    auto frame_fences = createFences(vd.device, num_swapchain_images);
+    VkFence* frame_fences = createFences(vd->device, num_command_buffers);
     // The swapchain might return an image whose index differs from the current
     // frame's. In this case waiting on the current frame's fence will not be
     // sufficient, as the image might still be accessed by another frame's commands.
     // Store the fence of the last frame that rendered to an image to wait
     // for all accesses to be done.
-    std::vector<VkFence> image_fences{num_swapchain_images, VK_NULL_HANDLE};
+    VkFence* image_fences = calloc(num_command_buffers, sizeof(*image_fences));
+    for (unsigned i = 0; i < num_command_buffers; i++) {
+       image_fences[i] = VK_NULL_HANDLE;
+    }
 
     unsigned frame = 0;
     while (!shouldClose(window)) {
-        constexpr auto uint64_t_max = std::numeric_limits<uint64_t>::max();
-
-        auto& acquire_semaphore = acquire_semaphores[frame];
-        auto& render_semaphore = render_semaphores[frame];
-        auto& frame_fence = frame_fences[frame];
-
         unsigned image = 0;
-        vkAcquireNextImageKHR(vd.device, swapchain, uint64_t_max, acquire_semaphore, VK_NULL_HANDLE, &image);
+        vkAcquireNextImageKHR(vd->device, swapchain, UINT64_MAX, acquire_semaphores[frame], VK_NULL_HANDLE, &image);
 
-        auto& image_fence = image_fences[image];
-        auto& command_buffer = command_buffers[image];
-
-        if (image_fence != VK_NULL_HANDLE) {
-            vkWaitForFences(vd.device, 1, &image_fence, true, uint64_t_max);
+        if (image_fences[image] != VK_NULL_HANDLE) {
+            vkWaitForFences(vd->device, 1, &image_fences[image], true, UINT64_MAX);
         }
-        image_fence = frame_fence;
-        vkWaitForFences(vd.device, 1, &frame_fence, true, uint64_t_max);
-        vkResetFences(vd.device, 1, &frame_fence);
+        image_fences[image] = frame_fences[frame];
+        vkWaitForFences(vd->device, 1, &frame_fences[frame], true, UINT64_MAX);
+        vkResetFences(vd->device, 1, &frame_fences[frame]);
 
-        submitDraw(vd.queues.graphics, command_buffer, acquire_semaphore, render_semaphore, frame_fence);
-        submitPresent(vd.queues.present, swapchain, image, render_semaphore);
+        submitDraw(vd->queues.graphics, command_buffers[image], acquire_semaphores[frame], render_semaphores[frame], frame_fences[frame]);
+        submitPresent(vd->queues.present, swapchain, image, render_semaphores[frame]);
         glfwSwapBuffers(window);
 
-        frame = (frame + 1) % num_swapchain_images;
+        frame = (frame + 1) % num_command_buffers;
     }
-    vkDeviceWaitIdle(vd.device);
+    vkDeviceWaitIdle(vd->device);
 
-    destroyFences(vd.device, frame_fences);
-    destroySemaphores(vd.device, render_semaphores);
-    destroySemaphores(vd.device, acquire_semaphores);
+    destroyFences(vd->device, frame_fences, num_command_buffers);
+    destroySemaphores(vd->device, render_semaphores, num_command_buffers);
+    destroySemaphores(vd->device, acquire_semaphores, num_command_buffers);
+
+    free(image_fences);
+    free(frame_fences);
+    free(render_semaphores);
+    free(acquire_semaphores);
 }
-#endif
 
 void run() {
-    VkResult res = VK_SUCCESS;
-
     VulkanInstance vi;
-    res = createVulkanInstance(&vi);
-    if (res != VK_SUCCESS) {
-        fprintf(getErrorLog(), "Failed to create Vulkan instance: %s\n", vulkanErrorString(res));
-        return;
-    }
-
-    VulkanWindow vw;
-    res = createVulkanWindow(vi.instance, 1280, 720, &vw);
-    if (res != VK_SUCCESS) {
-        fprintf(getErrorLog(), "Failed to create Vulkan window: %s\n", vulkanErrorString(res));
-        return;
-    }
-
+    if (createVulkanInstance(&vi) != VK_SUCCESS) { return; }
+    VulkanWindow vw = createVulkanWindow(vi.instance, 1280, 720);
     VulkanGPU gpu;
-    res = selectVulkanGPU(vi.instance, vw.surface, &gpu);
-    if (res != VK_SUCCESS) {
-        fprintf(getErrorLog(), "Failed to select Vulkan GPU: %s\n", vulkanErrorString(res));
-        return;
+    if (selectVulkanGPU(vi.instance, vw.surface, &gpu) != VK_SUCCESS) {
+        goto CLEAN_LABEL(gpu);
     }
+    VulkanDevice vd = createVulkanDevice(&gpu);
+    VulkanSwapchain swapchain = createVulkanSwapchain(vd.device, &vw, &gpu);
+
+    VkRenderPass render_pass = createRenderPass(vd.device, swapchain.format.format);
+    VkPipeline pipeline = createPipeline(vd.device, swapchain.extent, render_pass);
+    if (pipeline == VK_NULL_HANDLE) {
+        goto CLEAN_LABEL(pipeline);
+    }
+
+    VkImageView* views = createImageViews(vd.device, swapchain.format.format, swapchain.images, swapchain.num_images);
+    VkFramebuffer* framebuffers = createSwapchainFramebuffers(vd.device, render_pass, views, swapchain.num_images, swapchain.extent);
+
+    VkCommandPool command_pool = createCommandPool(vd.device, gpu.queue_families.graphics);
+    VkCommandBuffer* command_buffers = allocateCommandBuffers(vd.device, command_pool, swapchain.num_images);
+    recordCommandBuffers(command_buffers, swapchain.num_images, framebuffers, render_pass, pipeline, swapchain.extent);
     
-    VulkanDevice vd;
-    res = createVulkanDevice(&gpu, &vd);
-    if (res != VK_SUCCESS) {
-        fprintf(getErrorLog(), "Failed to create Vulkan device: %s\n", vulkanErrorString(res));
-        return;
-    }
+    mainLoop(vw.window, &vd, swapchain.swapchain, command_buffers, swapchain.num_images);
 
-    VulkanSwapchain swapchain;
-    res = createVulkanSwapchain(vd.device, &vw, &gpu, &swapchain);
-    if (res != VK_SUCCESS) {
-        fprintf(getErrorLog(), "Failed to create Vulkan swapchain: %s\n", vulkanErrorString(res));
-        return;
-    }
-#if 0
+    vkFreeCommandBuffers(vd.device, command_pool, swapchain.num_images, command_buffers);
+    free(command_buffers);
+    vkDestroyCommandPool(vd.device, command_pool, NULL);
 
-    auto render_pass = createRenderPass(device.device, swapchain.format.format);
-    auto pipeline = createPipeline(device.device, swapchain.extent, render_pass);
+    destroyFramebuffers(vd.device, framebuffers, swapchain.num_images);
+    destroyImageViews(vd.device, views, swapchain.num_images);
+    free(framebuffers);
+    free(views);
 
-    auto views = createImageViews(device.device, swapchain.format.format, swapchain.images);
-    auto framebuffers = createSwapchainFramebuffers(device.device, render_pass, views, swapchain.extent);
+    vkDestroyPipeline(vd.device, pipeline, NULL);
+CLEAN_LABEL(pipeline):
+    vkDestroyRenderPass(vd.device, render_pass, NULL);
 
-    auto command_pool = createCommandPool(device.device, gpu.queue_families.graphics.value());
-    auto command_buffers = allocateCommandBuffers(device.device, command_pool, framebuffers.size());
-    recordCommandBuffers(command_buffers, render_pass, framebuffers, swapchain.extent, pipeline);
-    
-    mainLoop(vw.window, device, swapchain.swapchain, command_buffers);
-
-    vkFreeCommandBuffers(device.device, command_pool, command_buffers.size(), command_buffers.data());
-    vkDestroyCommandPool(device.device, command_pool, NULL);
-
-    destroyFramebuffers(device.device, framebuffers);
-    destroyImageViews(device.device, views);
-
-    vkDestroyPipeline(device.device, pipeline, NULL);
-    vkDestroyRenderPass(device.device, render_pass, NULL);
-
-#endif
     destroyVulkanSwapchain(vd.device, &swapchain);
     destroyVulkanDevice(&vd);
     freeVulkanGPU(&gpu);
+CLEAN_LABEL(gpu):
     destroyVulkanWindow(vi.instance, &vw);
     destroyVulkanInstance(&vi);
 }
