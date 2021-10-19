@@ -19,6 +19,8 @@
 #define DEBUG (true)
 #endif
 
+#define BIT_SET(x, i) ((x) & (1 << (i)))
+
 #define CLEAN_LABEL(v) clean_ ## v
 
 #define STRING(v) #v
@@ -935,6 +937,38 @@ VkPipelineShaderStageCreateInfo getPipelineShaderStageCreateInfo(
     };
 }
 
+typedef struct {
+    float pos[2];
+    float color[3];
+} Vertex;
+
+VkVertexInputBindingDescription getVertexBindingDescription() {
+    return (VkVertexInputBindingDescription) {
+        .binding = 0,
+        .stride = sizeof(Vertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+}
+
+const VkVertexInputAttributeDescription* getVertexAttributeDescriptions(unsigned* num_desc_ptr) {
+    static VkVertexInputAttributeDescription descs[] = {
+        {
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32_SFLOAT,
+            .offset = offsetof(Vertex, pos),
+        },
+        {
+            .location = 1,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = offsetof(Vertex, color),
+        },
+    };
+    *num_desc_ptr = ARRAY_SIZE(descs);
+    return descs;
+}
+
 VkPipeline createPipeline(
     VkDevice device, VkExtent2D swapchain_extent,
     VkRenderPass render_pass)
@@ -962,14 +996,19 @@ VkPipeline createPipeline(
         getPipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, frag_module),
     };
 
+    VkVertexInputBindingDescription vertex_binding_description = getVertexBindingDescription();
+    unsigned num_vertex_attribute_descriptions = 0;
+    const VkVertexInputAttributeDescription* vertex_attribute_descriptions =
+        getVertexAttributeDescriptions(&num_vertex_attribute_descriptions);
+
     VkPipelineVertexInputStateCreateInfo vertex_input_state = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .pNext = NULL,
         .flags = 0,
-        .vertexBindingDescriptionCount = 0,
-        .pVertexBindingDescriptions = NULL,
-        .vertexAttributeDescriptionCount = 0,
-        .pVertexAttributeDescriptions = NULL,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &vertex_binding_description,
+        .vertexAttributeDescriptionCount = num_vertex_attribute_descriptions,
+        .pVertexAttributeDescriptions = vertex_attribute_descriptions,
     };
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
@@ -1079,6 +1118,229 @@ VkPipeline createPipeline(
     return pipeline;
 }
 
+int getGPUMemoryTypeIndex(VkPhysicalDevice gpu, uint32_t supported_types, VkMemoryPropertyFlags required_properties)
+{
+    VkPhysicalDeviceMemoryProperties gpu_memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(gpu, &gpu_memory_properties);
+    for (unsigned i = 0; i < gpu_memory_properties.memoryTypeCount; i++) {
+        if (BIT_SET(supported_types, i) and
+            (required_properties & gpu_memory_properties.memoryTypes[i].propertyFlags) == required_properties) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+typedef struct {
+    VkBuffer buf;
+    VkDeviceMemory mem;
+} VulkanBuffer;
+
+void destroyVulkanBuffer(VkDevice device, VulkanBuffer* buffer) {
+    vkFreeMemory(device, buffer->mem, NULL);
+    vkDestroyBuffer(device, buffer->buf, NULL);
+}
+
+VkResult createVulkanBuffer(
+    VkPhysicalDevice gpu, VkDevice device,
+    VkDeviceSize buffer_size, VkBufferUsageFlags buffer_usage,
+    VkMemoryPropertyFlags memory_properties,
+    VulkanBuffer* buffer
+) {
+    buffer->buf = VK_NULL_HANDLE;
+    buffer->mem = VK_NULL_HANDLE;
+    VkResult res = VK_SUCCESS;
+
+    VkBufferCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .size = buffer_size,
+        .usage = buffer_usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    res = vkCreateBuffer(device, &create_info, NULL, &buffer->buf);
+    if (res != VK_SUCCESS){
+        goto fail;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(device, buffer->buf, &memory_requirements);
+
+    int memory_type_i = getGPUMemoryTypeIndex(gpu, memory_requirements.memoryTypeBits, memory_properties);
+    if (memory_type_i < 0) {
+        goto fail;
+    }
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = NULL,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = memory_type_i,
+    };
+
+    res = vkAllocateMemory(device, &alloc_info, NULL, &buffer->mem);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    res = vkBindBufferMemory(device, buffer->buf, buffer->mem, 0);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    return VK_SUCCESS;
+
+fail:
+    destroyVulkanBuffer(device, buffer);
+    return res;
+}
+
+VkResult copyVulkanBuffer(const VulkanDevice* vd, VkCommandPool cmd_pool, const VulkanBuffer* src, const VulkanBuffer* dst, size_t size) {
+    VkResult res = VK_SUCCESS;
+
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext = NULL,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = cmd_pool,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd_buffer = VK_NULL_HANDLE;
+    res = vkAllocateCommandBuffers(vd->device, &alloc_info, &cmd_buffer);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = NULL,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = NULL,
+    };
+    res = vkBeginCommandBuffer(cmd_buffer, &begin_info);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+    
+    VkBufferCopy copy_info = {
+        .size = size,
+        .srcOffset = 0,
+        .dstOffset = 0,
+    };
+    vkCmdCopyBuffer(cmd_buffer, src->buf, dst->buf, 1, &copy_info);
+
+    res = vkEndCommandBuffer(cmd_buffer);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = NULL,
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = NULL,
+        .pWaitDstStageMask = NULL,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd_buffer,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores = NULL,
+    };
+    res = vkQueueSubmit(vd->queues.graphics, 1, &submit_info, VK_NULL_HANDLE);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+    res = vkQueueWaitIdle(vd->queues.graphics);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    vkFreeCommandBuffers(vd->device, cmd_pool, 1, &cmd_buffer);
+
+    return VK_SUCCESS;
+
+fail:
+    vkFreeCommandBuffers(vd->device, cmd_pool, 1, &cmd_buffer);
+    return res;
+}
+
+const Vertex* getVertexData(unsigned* num_vertices_ptr) {
+    static Vertex vertices[] = {
+        {
+            {0.0f, -0.5f},
+            {1.0f, 0.0f, 0.0f},
+        },
+        {
+            {0.5f,  0.5f},
+            {0.0f, 1.0f, 0.0f},
+        },
+        {
+            {-0.5f,  0.5f},
+            {0.0f, 0.0f, 1.0f},
+        },
+    };
+
+    *num_vertices_ptr = ARRAY_SIZE(vertices);
+
+    return vertices;
+}
+
+VkResult createVertexBuffer(
+    VkPhysicalDevice gpu, const VulkanDevice* vd,
+    VkCommandPool cmd_pool,
+    const void* data, size_t size, size_t elem_size,
+    VulkanBuffer* buffer
+) {
+    VkResult res = VK_SUCCESS;
+    VulkanBuffer staging_buffer;
+    *buffer = (VulkanBuffer) {
+        .buf = VK_NULL_HANDLE,
+        .mem = VK_NULL_HANDLE,
+    };
+
+    size_t buffer_size = size * elem_size;
+    res = createVulkanBuffer(
+        gpu, vd->device,
+        buffer_size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &staging_buffer
+    );
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    res = createVulkanBuffer(
+        gpu, vd->device,
+        buffer_size,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        buffer
+    );
+
+    void* map = NULL;
+    res = vkMapMemory(vd->device, staging_buffer.mem, 0, buffer_size, 0, &map);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+    memcpy(map, data, buffer_size);
+    vkUnmapMemory(vd->device, staging_buffer.mem);
+
+    res = copyVulkanBuffer(vd, cmd_pool, &staging_buffer, buffer, buffer_size);
+    destroyVulkanBuffer(vd->device, &staging_buffer);
+    if (res != VK_SUCCESS) {
+        goto fail;
+    }
+
+    return VK_SUCCESS;
+
+fail:
+    destroyVulkanBuffer(vd->device, &staging_buffer);
+    destroyVulkanBuffer(vd->device, buffer);
+    return res;
+}
+
 VkImageView* createImageViews(VkDevice device, VkFormat format, const VkImage* images, unsigned num_images) {
     VkImageView* views = calloc(num_images, sizeof(*views));
     for (unsigned i = 0; i < num_images; i++) {
@@ -1174,7 +1436,9 @@ void recordCommandBuffers(
     const VkFramebuffer* framebuffers, 
     VkRenderPass render_pass,
     VkPipeline pipeline,
-    VkExtent2D swapchain_extent
+    VkExtent2D swapchain_extent,
+    VkBuffer buffer,
+    unsigned num_vertices
 ) {
     for (unsigned i = 0; i < num_command_buffers; i++) {
         VkCommandBufferBeginInfo begin_info = {
@@ -1202,7 +1466,10 @@ void recordCommandBuffers(
         };
         vkCmdBeginRenderPass(command_buffers[i], &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(command_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        vkCmdDraw(command_buffers[i], 3, 1, 0, 0);
+        VkBuffer bind_buffers[] = {buffer};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(command_buffers[i], 0, 1, bind_buffers, offsets);
+        vkCmdDraw(command_buffers[i], num_vertices, 1, 0, 0);
         vkCmdEndRenderPass(command_buffers[i]);
 
         vkEndCommandBuffer(command_buffers[i]);
@@ -1364,13 +1631,21 @@ void run() {
     VkFramebuffer* framebuffers = createSwapchainFramebuffers(vd.device, render_pass, views, swapchain.num_images, swapchain.extent);
 
     VkCommandPool command_pool = createCommandPool(vd.device, gpu.queue_families.graphics);
+    unsigned num_vertices = 0;
+    const Vertex* vertices = getVertexData(&num_vertices);
+    VulkanBuffer vertex_buffer;
+    if (createVertexBuffer(gpu.gpu, &vd, command_pool, vertices, num_vertices, sizeof(*vertices), &vertex_buffer) != VK_SUCCESS) {
+        goto CLEAN_LABEL(vertex_buffer);
+    }
     VkCommandBuffer* command_buffers = allocateCommandBuffers(vd.device, command_pool, swapchain.num_images);
-    recordCommandBuffers(command_buffers, swapchain.num_images, framebuffers, render_pass, pipeline, swapchain.extent);
+    recordCommandBuffers(command_buffers, swapchain.num_images, framebuffers, render_pass, pipeline, swapchain.extent, vertex_buffer.buf, 3);
     
     mainLoop(vw.window, &vd, swapchain.swapchain, command_buffers, swapchain.num_images);
 
     vkFreeCommandBuffers(vd.device, command_pool, swapchain.num_images, command_buffers);
     free(command_buffers);
+    destroyVulkanBuffer(vd.device, &vertex_buffer);
+CLEAN_LABEL(vertex_buffer):
     vkDestroyCommandPool(vd.device, command_pool, NULL);
 
     destroyFramebuffers(vd.device, framebuffers, swapchain.num_images);
